@@ -709,6 +709,16 @@ def scan_chunk():
         from_date = today - timedelta(days=CANDLE_DAYS)
         scan_date = today.strftime("%Y-%m-%d")
         
+        # Clear old results only on the FIRST chunk of a new scan
+        if start_idx == 0 and DB_TYPE == 'postgresql':
+            try:
+                with db_engine.connect() as conn:
+                    conn.execute(text("DELETE FROM scan_results WHERE scan_date = :scan_date"), {"scan_date": scan_date})
+                    conn.commit()
+                    print(f"  Cleared previous results for {scan_date}")
+            except Exception as e:
+                print(f"  Clear error: {e}")
+        
         scan_progress["running"] = True
         scan_progress["phase"] = f"Scanning stocks {start_idx+1}-{end_idx}"
         scan_progress["current"] = start_idx
@@ -886,32 +896,11 @@ def scan_chunk():
         print(f"    Skip reasons: {skip_reasons}")
         print()
         
-        # Save results to DB
+        # Save chunk results to DB (append, don't delete previous chunks)
         if DB_TYPE == 'postgresql':
             try:
                 with db_engine.connect() as conn:
-                    conn.execute(text("DELETE FROM scan_results WHERE scan_date = :scan_date"), {"scan_date": scan_date})
-                    # Load existing + new
-                    all_existing = []
-                    result = conn.execute(text(
-                        "SELECT symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope, "
-                        "proximity_pct, day_change_pct, sector, touch_day "
-                        "FROM scan_results WHERE scan_date = :scan_date"
-                    ), {"scan_date": scan_date})
-                    for row in result.fetchall():
-                        all_existing.append({
-                            "symbol": row[0], "ltp": row[1], "ema9": row[2], "ema21": row[3],
-                            "gap_pct": row[4], "ema9_slope": row[5], "ema21_slope": row[6],
-                            "proximity_pct": row[7], "day_change_pct": row[8],
-                            "sector": row[9], "touch_day": row[10]
-                        })
-                    # Merge
-                    seen_symbols = set(r["symbol"] for r in all_existing)
                     for r in chunk_results:
-                        if r["symbol"] not in seen_symbols:
-                            all_existing.append(r)
-                    # Re-save all
-                    for r in all_existing:
                         conn.execute(text("""INSERT INTO scan_results
                             (scan_date, symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope,
                              proximity_pct, day_change_pct, sector, touch_day)
