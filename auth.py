@@ -195,7 +195,7 @@ class UpstoxClient:
                 
         # token is now instrument_key like "NSE_EQ|INE002A01018"
         instrument_key = token if "|" in str(token) else f"NSE_EQ|{token}"
-        url = f"{UPSTOX_API}/v3/historical-candle/{instrument_key}/{interval}/{to_date.isoformat()}/{from_date.isoformat()}"
+        url = f"{UPSTOX_API}/v3/historical-candle/{instrument_key}/{interval}/{from_date.isoformat()}/{to_date.isoformat()}"
                 
         # Log first few API calls for debugging
         if not hasattr(self, '_api_call_count'):
