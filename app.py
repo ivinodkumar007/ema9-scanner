@@ -691,6 +691,11 @@ def scan_chunk():
         scan_progress["total"] = len(symbols)
         
         chunk_results = []
+        pass1_count = 0
+        error_count = 0
+        skip_reasons = {"no_token": 0, "no_candles": 0, "ema_len": 0, "ema9_below_ema21": 0,
+                       "gap": 0, "ema9_slope": 0, "ema21_slope": 0, "no_touch": 0,
+                       "day_change": 0, "ltp_cap": 0, "error": 0}
         
         for idx, sym in enumerate(chunk_symbols):
             actual_idx = start_idx + idx
@@ -700,6 +705,7 @@ def scan_chunk():
             try:
                 token = _get_instrument_token(kite, sym)
                 if not token:
+                    skip_reasons["no_token"] += 1
                     continue
                 
                 if hasattr(kite, '_get_instrument_token'):
@@ -708,6 +714,7 @@ def scan_chunk():
                     candles = kite.historical_data(instrument_token=token, from_date=from_date, to_date=today, interval="day")
                 
                 if not candles or len(candles) < 30:
+                    skip_reasons["no_candles"] += 1
                     continue
                 
                 closes = [c["close"] for c in candles]
@@ -732,6 +739,7 @@ def scan_chunk():
                 aligned_lows   = lows[-min_len:]
                 
                 if len(ema9) < 6 or len(ema21) < 6:
+                    skip_reasons["ema_len"] += 1
                     continue
                 
                 cur_ema9  = ema9[-1]
@@ -741,21 +749,25 @@ def scan_chunk():
                 
                 # F1: EMA9 > EMA21
                 if cur_ema9 <= cur_ema21:
+                    skip_reasons["ema9_below_ema21"] += 1
                     continue
                 
                 # F2: Gap %
                 gap_pct = ((cur_ema9 - cur_ema21) / cur_ema21) * 100
                 if gap_pct < GAP_PCT_MIN or gap_pct > GAP_PCT_MAX:
+                    skip_reasons["gap"] += 1
                     continue
                 
                 # F3: EMA9 Slope
                 ema9_slope = ((ema9[-1] - ema9[-6]) / ema9[-6]) * 100
                 if ema9_slope < EMA9_SLOPE5_MIN or ema9_slope > EMA9_SLOPE5_MAX:
+                    skip_reasons["ema9_slope"] += 1
                     continue
                 
                 # F4: EMA21 Slope
                 ema21_slope = ((ema21[-1] - ema21[-6]) / ema21[-6]) * 100
                 if ema21_slope < EMA21_SLOPE5_MIN or ema21_slope > EMA21_SLOPE5_MAX:
+                    skip_reasons["ema21_slope"] += 1
                     continue
                 
                 # F5: EMA9 Touch
@@ -773,7 +785,10 @@ def scan_chunk():
                         break
                 
                 if not touch_day:
+                    skip_reasons["no_touch"] += 1
                     continue
+                
+                pass1_count += 1
                 
                 # PASS 2: LTP checks - use OHLC API for live/last-trading-day prices
                 ltp = 0
@@ -808,8 +823,10 @@ def scan_chunk():
                     print(f"  [{start_idx+idx+1}] {sym}: LTP={ltp:.2f} prev={prev_close:.2f} chg={day_change:+.2f}% ema9={cur_ema9:.2f}")
                 
                 if day_change < INTRADAY_GAIN_MIN or day_change > INTRADAY_GAIN_MAX:
+                    skip_reasons["day_change"] += 1
                     continue
                 if ltp > cur_ema9 * (1 + LTP_EMA9_MAX / 100):
+                    skip_reasons["ltp_cap"] += 1
                     continue
                 
                 proximity_pct = ((ltp - cur_ema9) / cur_ema9) * 100
@@ -826,14 +843,20 @@ def scan_chunk():
                     "sector": sector, "touch_day": touch_day
                 })
                 
-            except Exception:
-                pass
+            except Exception as e:
+                skip_reasons["error"] += 1
+                error_count += 1
+                if error_count <= 3:
+                    print(f"  ERROR on {sym}: {e}")
             
             if (idx + 1) % 3 == 0:
                 time.sleep(0.35)
         
-        # Log Pass 1 summary
-        print(f"  Chunk {start_idx+1}-{end_idx}: {len(chunk_results)} stocks passed all filters")
+        # Log chunk summary
+        print(f"\n  Chunk {start_idx+1}-{end_idx} Summary:")
+        print(f"    Total: {len(chunk_symbols)} | Pass1: {pass1_count} | Final: {len(chunk_results)} | Errors: {error_count}")
+        print(f"    Skip reasons: {skip_reasons}")
+        print()
         
         # Save results to DB
         if DB_TYPE == 'postgresql':
