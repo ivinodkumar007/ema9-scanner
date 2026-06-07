@@ -857,8 +857,8 @@ def scan_chunk():
             except Exception as e:
                 return None, {"error": 1}
         
-        # Process stocks in parallel with 20 threads
-        with ThreadPoolExecutor(max_workers=20) as executor:
+        # Process stocks in parallel with 40 threads
+        with ThreadPoolExecutor(max_workers=40) as executor:
             futures = {executor.submit(process_stock, s): s for s in chunk_symbols}
             for future in as_completed(futures):
                 result, skips = future.result()
