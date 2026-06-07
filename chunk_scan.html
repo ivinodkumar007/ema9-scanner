@@ -26,10 +26,10 @@
     
     <div>
         <button class="btn btn-start" id="btnStart" onclick="startAutoScan()">
-            ▶ START AUTO SCAN
+            &#9654; START AUTO SCAN
         </button>
         <button class="btn btn-stop" id="btnStop" onclick="stopAutoScan()" disabled>
-            ⏹ STOP
+            &#9209; STOP
         </button>
         <button class="btn btn-success" onclick="loadResults()">
             🔄 Refresh
@@ -85,7 +85,7 @@
             if (!autoRunning) return;
             
             const status = document.getElementById('status');
-            status.textContent = 'Scanning stocks ' + (currentIdx + 1) + '-' + (currentIdx + 50) + '...';
+            status.textContent = 'Scanning stocks ' + (currentIdx + 1) + '-' + Math.min(currentIdx + 10, 9999) + '...';
             
             try {
                 const response = await fetch('/scan-chunk', {

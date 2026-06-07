@@ -668,7 +668,7 @@ def scan_chunk():
     try:
         data = request.json if request.is_json else {}
         start_idx = data.get('start_idx', 0)
-        chunk_size = 50
+        chunk_size = 10  # Smaller chunks to stay within Render's 30s timeout
         
         symbols = load_symbols()
         if not symbols:
@@ -677,6 +677,10 @@ def scan_chunk():
         kite = get_kite()
         if not kite:
             return jsonify({"error": "Authentication failed"}), 400
+        
+        # Pre-load instrument cache once (saves time per stock)
+        if hasattr(kite, 'instruments'):
+            kite.instruments("NSE")
         
         end_idx = min(start_idx + chunk_size, len(symbols))
         chunk_symbols = symbols[start_idx:end_idx]
@@ -852,7 +856,7 @@ def scan_chunk():
                     print(f"  ERROR on {sym}: {e}")
             
             if (idx + 1) % 3 == 0:
-                time.sleep(0.35)
+                time.sleep(0.2)
         
         # Log chunk summary
         print(f"\n  Chunk {start_idx+1}-{end_idx} Summary:")
