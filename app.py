@@ -689,7 +689,7 @@ def scan_chunk():
     try:
         data = request.json if request.is_json else {}
         start_idx = data.get('start_idx', 0)
-        chunk_size = 100  # 20 threads process 100 stocks in parallel
+        chunk_size = 50  # 40 threads process 50 stocks in parallel
         
         symbols = load_symbols()
         if not symbols:
