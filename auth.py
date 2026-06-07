@@ -89,40 +89,37 @@ class UpstoxClient:
                         data = r.json()
                     
                     instruments = []
-                    # JSON format is a dict with instrument keys
+                    # JSON can be a dict or list
+                    items = []
                     if isinstance(data, dict):
-                        # Log structure for debugging
-                        sample_keys = list(data.keys())[:3]
-                        print(f"    JSON type: dict with {len(data)} keys")
-                        if sample_keys:
-                            print(f"    Sample keys: {sample_keys}")
-                            sample_val = data[sample_keys[0]]
-                            if isinstance(sample_val, dict):
-                                print(f"    Sample value keys: {list(sample_val.keys())[:10]}")
-                        
-                        for key, inst in data.items():
-                            if not isinstance(inst, dict):
-                                continue
-                            # Filter by exchange and segment
-                            segment = inst.get("segment", "")
-                            inst_type = inst.get("instrument_type", "")
-                            exchange_val = inst.get("exchange", "")
-                            # Accept NSE_EQ instruments (equity stocks)
-                            if segment == "NSE_EQ" and inst_type in ("EQ", "BE", "BZ", ""):
-                                instruments.append({
-                                    "tradingsymbol": inst.get("trading_symbol", ""),
-                                    "instrument_key": inst.get("instrument_key", key),
-                                    "instrument_token": inst.get("exchange_token", ""),
-                                    "exchange": exchange_val,
-                                    "isin": inst.get("isin", "")
-                                })
+                        items = list(data.values())
                     elif isinstance(data, list):
-                        # Maybe it's a list format
-                        print(f"    JSON type: list with {len(data)} items")
-                        if data:
-                            print(f"    Sample item keys: {list(data[0].keys())[:10] if isinstance(data[0], dict) else 'not dict'}")
+                        items = data
+                    
+                    print(f"    JSON has {len(items)} items")
+                    if items and isinstance(items[0], dict):
+                        print(f"    Sample keys: {list(items[0].keys())[:10]}")
+                    
+                    for inst in items:
+                        if not isinstance(inst, dict):
+                            continue
+                        segment = inst.get("segment", "")
+                        inst_type = inst.get("instrument_type", "")
+                        exchange_val = inst.get("exchange", "")
+                        # Accept NSE equity instruments
+                        if segment == "NSE_EQ" and inst_type in ("EQ", "BE", "BZ", ""):
+                            instruments.append({
+                                "tradingsymbol": inst.get("trading_symbol", ""),
+                                "instrument_key": inst.get("instrument_key", ""),
+                                "instrument_token": inst.get("exchange_token", ""),
+                                "exchange": exchange_val,
+                                "isin": inst.get("isin", "")
+                            })
                     
                     print(f"    Filtered to {len(instruments)} NSE_EQ instruments")
+                    if instruments:
+                        samples = [i["tradingsymbol"] for i in instruments[:5]]
+                        print(f"    Sample symbols: {samples}")
                     
                     if instruments:
                         self._instrument_cache = {"exchange": exchange, "data": instruments}
