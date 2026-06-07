@@ -776,19 +776,36 @@ def scan_chunk():
                     continue
                 
                 # PASS 2: LTP checks - use OHLC API for live/last-trading-day prices
+                ltp = 0
+                prev_close = 0
                 try:
                     ohlc_data = kite.ohlc(sym)
                     if isinstance(ohlc_data, dict) and "last_price" in ohlc_data:
                         ltp = ohlc_data["last_price"]
                         prev_close = ohlc_data["ohlc"]["close"]
+                        # On weekends, OHLC might return 0 or stale data
+                        if ltp <= 0 or prev_close <= 0:
+                            ltp = cur_close
+                            prev_close = aligned_closes[-2] if len(aligned_closes) > 1 else cur_close
                     else:
                         ltp = cur_close
                         prev_close = aligned_closes[-2] if len(aligned_closes) > 1 else cur_close
-                except Exception:
+                except Exception as e:
+                    print(f"  OHLC failed for {sym}: {e}")
                     ltp = cur_close
                     prev_close = aligned_closes[-2] if len(aligned_closes) > 1 else cur_close
                 
+                # Fallback: if still no valid prices, use historical data
+                if ltp <= 0:
+                    ltp = cur_close
+                if prev_close <= 0:
+                    prev_close = aligned_closes[-2] if len(aligned_closes) > 1 else cur_close
+                
                 day_change = ((ltp - prev_close) / prev_close) * 100 if prev_close else 0
+                
+                # Debug log first few stocks
+                if idx < 5:
+                    print(f"  [{start_idx+idx+1}] {sym}: LTP={ltp:.2f} prev={prev_close:.2f} chg={day_change:+.2f}% ema9={cur_ema9:.2f}")
                 
                 if day_change < INTRADAY_GAIN_MIN or day_change > INTRADAY_GAIN_MAX:
                     continue
@@ -814,6 +831,9 @@ def scan_chunk():
             
             if (idx + 1) % 3 == 0:
                 time.sleep(0.35)
+        
+        # Log Pass 1 summary
+        print(f"  Chunk {start_idx+1}-{end_idx}: {len(chunk_results)} stocks passed all filters")
         
         # Save results to DB
         if DB_TYPE == 'postgresql':
