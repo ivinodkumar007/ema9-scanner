@@ -683,7 +683,7 @@ def trigger_scan():
     return jsonify({"status": "started"})
 
 
-@app.route("/scan-chunk", methods=["GET"])
+@app.route("/scan-chunk", methods=["POST"])
 def scan_chunk():
     """Scan next 50 stocks with FULL logic (manual chunk-by-chunk for Render)."""
     try:
