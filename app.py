@@ -926,6 +926,13 @@ def dashboard():
     return render_template_string(HTML_TEMPLATE)
 
 
+@app.route("/chunk")
+def chunk_mode():
+    """Chunk-by-chunk scanning mode for Render."""
+    with open(os.path.join(os.path.dirname(__file__), 'chunk_scan.html'), 'r') as f:
+        return f.read()
+
+
 HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>

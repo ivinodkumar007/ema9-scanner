@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>EMA9 Scanner - Chunk Mode</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 20px auto; padding: 20px; }
+        .btn { padding: 15px 30px; font-size: 16px; margin: 10px 5px; cursor: pointer; border: none; border-radius: 5px; }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-success { background: #28a745; color: white; }
+        .btn:disabled { background: #6c757d; cursor: not-allowed; }
+        .status { margin: 20px 0; padding: 15px; background: #f8f9fa; border-radius: 5px; }
+        .progress { margin: 10px 0; }
+        #results { margin-top: 20px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #f8f9fa; }
+    </style>
+</head>
+<body>
+    <h1>EMA9 Pullback Scanner - Chunk Mode</h1>
+    
+    <div>
+        <button class="btn btn-primary" id="btnScanChunk" onclick="scanNextChunk()">
+            📊 Scan Next 50 Stocks
+        </button>
+        <button class="btn btn-success" onclick="loadResults()">
+            🔄 Refresh Results
+        </button>
+    </div>
+    
+    <div class="status">
+        <div id="status">Ready - Click "Scan Next 50 Stocks" to begin</div>
+        <div class="progress" id="progress" style="display:none;">
+            Progress: <span id="progressText">0 / 0</span>
+        </div>
+        <div>Results: <strong id="resultCount">0</strong> stocks</div>
+    </div>
+    
+    <div id="results"></div>
+    
+    <script>
+        let currentIdx = 0;
+        let totalStocks = 0;
+        
+        async function scanNextChunk() {
+            const btn = document.getElementById('btnScanChunk');
+            const status = document.getElementById('status');
+            const progress = document.getElementById('progress');
+            
+            btn.disabled = true;
+            btn.textContent = 'Scanning...';
+            status.textContent = 'Scanning stocks ' + (currentIdx + 1) + '-' + (currentIdx + 50);
+            progress.style.display = 'block';
+            
+            try {
+                const response = await fetch('/scan-chunk', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ start_idx: currentIdx })
+                });
+                
+                const data = await response.json();
+                
+                if (data.error) {
+                    status.textContent = 'Error: ' + data.error;
+                } else {
+                    currentIdx = data.next_idx;
+                    totalStocks = data.total;
+                    status.textContent = '✓ ' + data.message + ' (' + data.results_count + ' results)';
+                    document.getElementById('progressText').textContent = currentIdx + ' / ' + totalStocks;
+                    
+                    if (currentIdx >= totalStocks) {
+                        status.textContent = '✓ Scan complete! All ' + totalStocks + ' stocks processed.';
+                        btn.textContent = '✓ Scan Complete';
+                    } else {
+                        btn.disabled = false;
+                        btn.textContent = '📊 Scan Next 50 Stocks (' + (totalStocks - currentIdx) + ' left)';
+                    }
+                    
+                    loadResults();
+                }
+            } catch (error) {
+                status.textContent = 'Error: ' + error.message;
+                btn.disabled = false;
+                btn.textContent = '📊 Scan Next 50 Stocks';
+            }
+        }
+        
+        async function loadResults() {
+            try {
+                const response = await fetch('/results');
+                const data = await response.json();
+                document.getElementById('resultCount').textContent = data.length;
+                
+                if (data.length > 0) {
+                    let html = '<table><tr><th>Symbol</th><th>LTP</th><th>Day Change%</th><th>Date</th></tr>';
+                    data.forEach(r => {
+                        html += '<tr><td>' + r.symbol + '</td><td>' + r.ltp + '</td><td>' + r.day_change_pct + '%</td><td>' + r.scan_date + '</td></tr>';
+                    });
+                    html += '</table>';
+                    document.getElementById('results').innerHTML = html;
+                }
+            } catch (error) {
+                console.error('Error loading results:', error);
+            }
+        }
+        
+        // Load results on page load
+        loadResults();
+    </script>
+</body>
+</html>
