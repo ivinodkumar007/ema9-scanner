@@ -683,13 +683,13 @@ def trigger_scan():
     return jsonify({"status": "started"})
 
 
-@app.route("/scan-chunk", methods=["POST"])
+@app.route("/scan-chunk", methods=["GET"])
 def scan_chunk():
     """Scan next 50 stocks with FULL logic (manual chunk-by-chunk for Render)."""
     try:
         data = request.json if request.is_json else {}
         start_idx = data.get('start_idx', 0)
-        chunk_size = 50  # 40 threads process 50 stocks in parallel
+        chunk_size = 20  # 40 threads process 20 stocks in parallel (very fast per chunk)
         
         symbols = load_symbols()
         if not symbols:
@@ -1234,7 +1234,7 @@ async function scanNextChunk(){
       document.getElementById('progText').textContent='Done! '+scanTotal+' stocks in '+scanChunks+' chunks ('+data.results_count+' total matches)';
       stopScan();
     } else {
-      setTimeout(scanNextChunk, 1000);
+      setTimeout(scanNextChunk, 500);
     }
   } catch(e){
     document.getElementById('progText').textContent='Error: '+e.message;
