@@ -62,35 +62,47 @@ class UpstoxClient:
     
     def instruments(self, exchange="NSE"):
         """Get all instruments for an exchange.
-        Downloads from Upstox public instrument file."""
+        Downloads from Upstox JSON instrument file (BOD)."""
         if self._instrument_cache and self._instrument_cache.get("exchange") == exchange:
             return self._instrument_cache["data"]
         
-        # Try multiple Upstox instrument URLs
+        # Upstox JSON instrument URLs (CSV is deprecated)
         urls = [
-            f"https://assets.upstox.com/assets/upstox-assets/market_data/instruments/{exchange.lower()}_contracts.csv",
-            f"https://assets.upstox.com/market-quote/instruments/exchange/{exchange.lower()}.csv",
+            f"https://assets.upstox.com/market-quote/instruments/exchange/{exchange.lower()}.json.gz",
+            f"https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz",
         ]
         
         for url in urls:
             try:
+                import gzip
+                import json as json_lib
+                
                 print(f"  Downloading instruments from: {url[:80]}...")
                 r = requests.get(url, timeout=30)
-                print(f"  Response: {r.status_code}, size: {len(r.text)} bytes")
+                print(f"  Response: {r.status_code}, size: {len(r.content)} bytes")
                 
-                if r.status_code == 200 and len(r.text) > 100:
-                    import csv
-                    import io
+                if r.status_code == 200 and len(r.content) > 100:
+                    # Decompress gzip
+                    if url.endswith('.gz'):
+                        data = json_lib.loads(gzip.decompress(r.content))
+                    else:
+                        data = r.json()
                     
-                    csv_file = io.StringIO(r.text)
-                    reader = csv.DictReader(csv_file)
                     instruments = []
-                    for row in reader:
-                        instruments.append({
-                            "tradingsymbol": row.get("tradingsymbol", ""),
-                            "instrument_token": row.get("instrument_token", ""),
-                            "exchange": row.get("exchange", "")
-                        })
+                    # JSON format is a dict with instrument keys
+                    if isinstance(data, dict):
+                        for key, inst in data.items():
+                            # Filter by exchange and segment
+                            segment = inst.get("segment", "")
+                            inst_type = inst.get("instrument_type", "")
+                            if exchange == "NSE" and segment == "NSE_EQ" and inst_type in ("EQ", "BE", ""):
+                                instruments.append({
+                                    "tradingsymbol": inst.get("trading_symbol", ""),
+                                    "instrument_key": inst.get("instrument_key", key),
+                                    "instrument_token": inst.get("exchange_token", ""),
+                                    "exchange": inst.get("exchange", ""),
+                                    "isin": inst.get("isin", "")
+                                })
                     
                     if instruments:
                         self._instrument_cache = {"exchange": exchange, "data": instruments}
@@ -103,7 +115,7 @@ class UpstoxClient:
         return []
     
     def _get_instrument_token(self, symbol):
-        """Get instrument token for a symbol."""
+        """Get instrument key for a symbol (used in API calls)."""
         if self._instrument_cache is None:
             self.instruments("NSE")
         
@@ -114,7 +126,8 @@ class UpstoxClient:
         
         for inst in self._instrument_cache["data"]:
             if inst.get("tradingsymbol") == symbol:
-                return inst.get("instrument_token")
+                # Return instrument_key (e.g., "NSE_EQ|INE002A01018") for API calls
+                return inst.get("instrument_key") or inst.get("instrument_token")
         return None
     
     def historical_data(self, symbol, from_date, to_date, interval="day"):
@@ -144,9 +157,8 @@ class UpstoxClient:
             self._missing_count += 1
             return []
         
-        # Upstox V3 Historical Candle API
-        # Format: /v3/historical-candle/{instrument_key}/{interval}/{to_date}/{from_date}
-        instrument_key = f"NSE_EQ|{token}"
+        # token is now instrument_key like "NSE_EQ|INE002A01018"
+        instrument_key = token if "|" in str(token) else f"NSE_EQ|{token}"
         url = f"{UPSTOX_API}/v3/historical-candle/{instrument_key}/{interval}/{to_date.isoformat()}/{from_date.isoformat()}"
         
         try:
@@ -189,9 +201,8 @@ class UpstoxClient:
         if not token:
             return None
         
-        # Upstox V3 OHLC Quote API
-        # Format: /v3/market-quote/ohlc?symbol=NSE_EQ|{instrument_token}
-        instrument_key = f"NSE_EQ|{token}"
+        # token is now instrument_key like "NSE_EQ|INE002A01018"
+        instrument_key = token if "|" in str(token) else f"NSE_EQ|{token}"
         url = f"{UPSTOX_API}/v3/market-quote/ohlc?symbol={instrument_key}"
         
         try:
