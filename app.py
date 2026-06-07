@@ -28,8 +28,14 @@ from auth import get_kite
 if DB_TYPE == 'postgresql':
     from sqlalchemy import create_engine, text
     db_engine = create_engine(DB_PATH)
+    # Add connection pooling settings
+    db_engine.pool._recycle = 300  # Recycle connections every 5 min
 
 app = Flask(__name__)
+
+# Directory for chunk files
+CHUNK_DIR = os.path.join(DATA_DIR if DB_TYPE == 'sqlite' else '/tmp', 'scan_chunks')
+os.makedirs(CHUNK_DIR, exist_ok=True)
 
 scan_progress = {"running": False, "current": 0, "total": 0, "symbol": "", "phase": ""}
 scan_results_cache = []
@@ -364,7 +370,8 @@ def run_scan(console=False):
         print("-"*70)
 
     results = []
-    BATCH_SIZE = 30  # Process in batches to avoid timeout
+    BATCH_SIZE = 50  # Process 50 stocks per API call
+    CHUNK_SIZE = 50  # Save chunk every 50 stocks
     
     # Load existing results for today (in case of resume)
     scan_date = today.strftime("%Y-%m-%d")
@@ -449,33 +456,23 @@ def run_scan(console=False):
         if (idx + 1) % 5 == 0:
             time.sleep(0.2)
         
-        # Save to DB in batches to avoid timeout
-        if (idx + 1) % BATCH_SIZE == 0 or (idx + 1) == len(pass1_results):
+        # Save to chunk files every 50 stocks (avoids timeout)
+        if (idx + 1) % CHUNK_SIZE == 0:
+            chunk_file = os.path.join(CHUNK_DIR, f"chunk_{scan_date}_{idx+1}.json")
             try:
-                if DB_TYPE == 'postgresql':
-                    with db_engine.connect() as conn:
-                        # Delete and re-insert today's results
-                        conn.execute(text("DELETE FROM scan_results WHERE scan_date = :scan_date"), 
-                                   {"scan_date": scan_date})
-                        for r in results:
-                            conn.execute(text("""INSERT INTO scan_results
-                                (scan_date, symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope,
-                                 proximity_pct, day_change_pct, sector, touch_day)
-                                VALUES (:scan_date, :symbol, :ltp, :ema9, :ema21, :gap_pct, :ema9_slope, :ema21_slope,
-                                        :proximity_pct, :day_change_pct, :sector, :touch_day)"""), {
-                                "scan_date": scan_date,
-                                "symbol": r["symbol"], "ltp": r["ltp"], "ema9": r["ema9"],
-                                "ema21": r["ema21"], "gap_pct": r["gap_pct"],
-                                "ema9_slope": r["ema9_slope"], "ema21_slope": r["ema21_slope"],
-                                "proximity_pct": r["proximity_pct"], "day_change_pct": r["day_change_pct"],
-                                "sector": r["sector"], "touch_day": r["touch_day"]
-                            })
-                        conn.commit()
-                        if console:
-                            print(f"  ✓ Saved {len(results)} results to DB (batch {idx+1})")
+                # Save current results to chunk file
+                with open(chunk_file, 'w') as f:
+                    json.dump(results, f)
+                if console:
+                    print(f"  ✓ Saved chunk: {len(results)} results (stocks 1-{idx+1})")
+                
+                # Break for 1 second to reset connection
+                time.sleep(1)
+                if console:
+                    print(f"  ⏱️  1-second break (connection reset)")
             except Exception as e:
                 if console:
-                    print(f"  ⚠ Batch save failed: {e}")
+                    print(f"  ⚠ Chunk save failed: {e}")
 
     # ================================================================
     # PASS 3: Sector lookup from Screener.in
@@ -506,6 +503,43 @@ def run_scan(console=False):
             for r in results:
                 print(f"  {r['symbol']:<16} {r['ltp']:>10.2f} {r['ema9']:>10.2f} {r['gap_pct']:>7.2f}% {r['day_change_pct']:>+7.2f}% {r['proximity_pct']:>+7.2f}% {r['touch_day']:<6} {r['sector']}")
         print("="*70 + "\n")
+
+    # Save all results to database (consolidate chunks)
+    if DB_TYPE == 'postgresql':
+        try:
+            with db_engine.connect() as conn:
+                conn.execute(text("DELETE FROM scan_results WHERE scan_date = :scan_date"), 
+                           {"scan_date": scan_date})
+                for r in results:
+                    conn.execute(text("""INSERT INTO scan_results
+                        (scan_date, symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope,
+                         proximity_pct, day_change_pct, sector, touch_day)
+                        VALUES (:scan_date, :symbol, :ltp, :ema9, :ema21, :gap_pct, :ema9_slope, :ema21_slope,
+                                :proximity_pct, :day_change_pct, :sector, :touch_day)"""), {
+                        "scan_date": scan_date,
+                        "symbol": r["symbol"], "ltp": r["ltp"], "ema9": r["ema9"],
+                        "ema21": r["ema21"], "gap_pct": r["gap_pct"],
+                        "ema9_slope": r["ema9_slope"], "ema21_slope": r["ema21_slope"],
+                        "proximity_pct": r["proximity_pct"], "day_change_pct": r["day_change_pct"],
+                        "sector": r["sector"], "touch_day": r["touch_day"]
+                    })
+                conn.commit()
+                if console:
+                    print(f"  ✓ Saved {len(results)} results to PostgreSQL")
+        except Exception as e:
+            if console:
+                print(f"  ⚠ DB save failed: {e}")
+    
+    # Clean up chunk files
+    try:
+        for f in os.listdir(CHUNK_DIR):
+            if f.startswith(f"chunk_{scan_date}_"):
+                os.remove(os.path.join(CHUNK_DIR, f))
+        if console:
+            print(f"  ✓ Cleaned up chunk files")
+    except Exception as e:
+        if console:
+            print(f"  ⚠ Cleanup failed: {e}")
 
     # Save scan log (results already saved in batches)
     if DB_TYPE == 'postgresql':
@@ -629,13 +663,36 @@ def trigger_scan():
 
 @app.route("/results")
 def get_results():
+    all_results = []
+    
+    # First, load any active chunk files (scan in progress)
+    try:
+        for chunk_file in sorted(os.listdir(CHUNK_DIR)):
+            if chunk_file.endswith('.json'):
+                chunk_path = os.path.join(CHUNK_DIR, chunk_file)
+                with open(chunk_path, 'r') as f:
+                    chunk_data = json.load(f)
+                    all_results.extend(chunk_data)
+    except Exception as e:
+        print(f"  ⚠ Error loading chunks: {e}")
+    
+    # Then load from database (completed scans)
     if DB_TYPE == 'postgresql':
-        with db_engine.connect() as conn:
-            result = conn.execute(text("""SELECT symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope,
-                        proximity_pct, day_change_pct, scan_date,
-                        COALESCE(sector,''), COALESCE(touch_day,'')
-                 FROM scan_results ORDER BY scan_date DESC, gap_pct ASC LIMIT 500"""))
-            rows = result.fetchall()
+        try:
+            with db_engine.connect() as conn:
+                result = conn.execute(text("""SELECT symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope,
+                            proximity_pct, day_change_pct, scan_date,
+                            COALESCE(sector,''), COALESCE(touch_day,'')
+                     FROM scan_results ORDER BY scan_date DESC, gap_pct ASC LIMIT 500"""))
+                db_rows = result.fetchall()
+                all_results.extend([{
+                    "symbol": r[0], "ltp": r[1], "ema9": r[2], "ema21": r[3],
+                    "gap_pct": r[4], "ema9_slope": r[5], "ema21_slope": r[6],
+                    "proximity_pct": r[7], "day_change_pct": r[8], "scan_date": r[9],
+                    "sector": r[10], "touch_day": r[11]
+                } for r in db_rows])
+        except Exception as e:
+            print(f"  ⚠ DB error: {e}")
     else:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -643,15 +700,22 @@ def get_results():
                         proximity_pct, day_change_pct, scan_date,
                         COALESCE(sector,''), COALESCE(touch_day,'')
                  FROM scan_results ORDER BY scan_date DESC, gap_pct ASC LIMIT 500""")
-        rows = c.fetchall()
+        db_rows = c.fetchall()
         conn.close()
+        all_results.extend([{
+            "symbol": r[0], "ltp": r[1], "ema9": r[2], "ema21": r[3],
+            "gap_pct": r[4], "ema9_slope": r[5], "ema21_slope": r[6],
+            "proximity_pct": r[7], "day_change_pct": r[8], "scan_date": r[9],
+            "sector": r[10], "touch_day": r[11]
+        } for r in db_rows])
     
-    return jsonify([{
-        "symbol": r[0], "ltp": r[1], "ema9": r[2], "ema21": r[3],
-        "gap_pct": r[4], "ema9_slope": r[5], "ema21_slope": r[6],
-        "proximity_pct": r[7], "day_change_pct": r[8], "scan_date": r[9],
-        "sector": r[10], "touch_day": r[11]
-    } for r in rows])
+    # Remove duplicates (keep latest)
+    seen = {}
+    for r in all_results:
+        key = (r.get('symbol'), r.get('scan_date', ''))
+        seen[key] = r
+    
+    return jsonify(list(seen.values())[:500])
 
 
 @app.route("/export")
