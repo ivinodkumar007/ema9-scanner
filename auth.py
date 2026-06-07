@@ -181,7 +181,7 @@ class UpstoxClient:
                 self._missing_count = 0
             if self._missing_count < 5:
                 cache_size = len(self._instrument_cache["data"]) if self._instrument_cache else 0
-                print(f"  ⚠ No token for '{symbol}' (cache has {cache_size} instruments)")
+                print(f"  \u26a0 No token for '{symbol}' (isin={isin})")
                 # Try fuzzy match
                 if self._instrument_cache and self._instrument_cache["data"]:
                     matches = [i["tradingsymbol"] for i in self._instrument_cache["data"] 
@@ -190,17 +190,20 @@ class UpstoxClient:
                         print(f"    Similar symbols: {matches}")
                     else:
                         print(f"    No similar matches found")
-                    # Also check name field
-                    name_matches = [i.get("tradingsymbol", "") for i in self._instrument_cache["data"]
-                                   if symbol.replace(" ", "") in i.get("name", "").replace(" ", "").upper()][:5]
-                    if name_matches:
-                        print(f"    Name matches: {name_matches}")
             self._missing_count += 1
             return []
-        
+                
         # token is now instrument_key like "NSE_EQ|INE002A01018"
         instrument_key = token if "|" in str(token) else f"NSE_EQ|{token}"
         url = f"{UPSTOX_API}/v3/historical-candle/{instrument_key}/{interval}/{to_date.isoformat()}/{from_date.isoformat()}"
+                
+        # Log first few API calls for debugging
+        if not hasattr(self, '_api_call_count'):
+            self._api_call_count = 0
+        if self._api_call_count < 3:
+            print(f"  \u2192 API call: {symbol} -> {instrument_key}")
+            print(f"    URL: {url[:120]}...")
+        self._api_call_count += 1
         
         try:
             r = requests.get(
@@ -212,6 +215,17 @@ class UpstoxClient:
                 timeout=15
             )
             data = r.json()
+            
+            # Log first few API responses
+            if not hasattr(self, '_api_resp_count'):
+                self._api_resp_count = 0
+            if self._api_resp_count < 3:
+                print(f"    Response status: {r.status_code}, data status: {data.get('status')}, keys: {list(data.keys())}")
+                candles = data.get("data", {}).get("candles", [])
+                print(f"    Candles returned: {len(candles)}")
+                if not candles:
+                    print(f"    Full response: {str(data)[:200]}")
+            self._api_resp_count += 1
             
             if data.get("status") == "success":
                 candles = data.get("data", {}).get("candles", [])
@@ -227,6 +241,12 @@ class UpstoxClient:
                     }
                     for c in candles
                 ]
+            else:
+                if not hasattr(self, '_api_fail_count'):
+                    self._api_fail_count = 0
+                if self._api_fail_count < 3:
+                    print(f"    API failed: {data.get('status')} - {data.get('message', data.get('errors', ''))[:100]}")
+                self._api_fail_count += 1
         except Exception as e:
             print(f"  ⚠ Historical data error for {symbol}: {e}")
         
