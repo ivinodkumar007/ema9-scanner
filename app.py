@@ -364,8 +364,34 @@ def run_scan(console=False):
         print("-"*70)
 
     results = []
+    BATCH_SIZE = 30  # Process in batches to avoid timeout
+    
+    # Load existing results for today (in case of resume)
+    scan_date = today.strftime("%Y-%m-%d")
+    if DB_TYPE == 'postgresql':
+        try:
+            with db_engine.connect() as conn:
+                result = conn.execute(text(
+                    "SELECT symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope, "
+                    "proximity_pct, day_change_pct, sector, touch_day "
+                    "FROM scan_results WHERE scan_date = :scan_date"
+                ), {"scan_date": scan_date})
+                for row in result.fetchall():
+                    results.append({
+                        "symbol": row[0], "ltp": row[1], "ema9": row[2], "ema21": row[3],
+                        "gap_pct": row[4], "ema9_slope": row[5], "ema21_slope": row[6],
+                        "proximity_pct": row[7], "day_change_pct": row[8],
+                        "sector": row[9], "touch_day": row[10]
+                    })
+                if results:
+                    print(f"  ✓ Resuming scan with {len(results)} existing results")
+        except Exception as e:
+            print(f"  ⚠ Could not load existing results: {e}")
 
     for idx, p in enumerate(pass1_results):
+        # Skip if already processed (for resume)
+        if any(r["symbol"] == p["symbol"] for r in results):
+            continue
         sym = p["symbol"]
         instrument = f"NSE:{sym}"
         scan_progress["current"] = idx + 1
@@ -422,6 +448,34 @@ def run_scan(console=False):
 
         if (idx + 1) % 5 == 0:
             time.sleep(0.2)
+        
+        # Save to DB in batches to avoid timeout
+        if (idx + 1) % BATCH_SIZE == 0 or (idx + 1) == len(pass1_results):
+            try:
+                if DB_TYPE == 'postgresql':
+                    with db_engine.connect() as conn:
+                        # Delete and re-insert today's results
+                        conn.execute(text("DELETE FROM scan_results WHERE scan_date = :scan_date"), 
+                                   {"scan_date": scan_date})
+                        for r in results:
+                            conn.execute(text("""INSERT INTO scan_results
+                                (scan_date, symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope,
+                                 proximity_pct, day_change_pct, sector, touch_day)
+                                VALUES (:scan_date, :symbol, :ltp, :ema9, :ema21, :gap_pct, :ema9_slope, :ema21_slope,
+                                        :proximity_pct, :day_change_pct, :sector, :touch_day)"""), {
+                                "scan_date": scan_date,
+                                "symbol": r["symbol"], "ltp": r["ltp"], "ema9": r["ema9"],
+                                "ema21": r["ema21"], "gap_pct": r["gap_pct"],
+                                "ema9_slope": r["ema9_slope"], "ema21_slope": r["ema21_slope"],
+                                "proximity_pct": r["proximity_pct"], "day_change_pct": r["day_change_pct"],
+                                "sector": r["sector"], "touch_day": r["touch_day"]
+                            })
+                        conn.commit()
+                        if console:
+                            print(f"  ✓ Saved {len(results)} results to DB (batch {idx+1})")
+            except Exception as e:
+                if console:
+                    print(f"  ⚠ Batch save failed: {e}")
 
     # ================================================================
     # PASS 3: Sector lookup from Screener.in
@@ -453,29 +507,9 @@ def run_scan(console=False):
                 print(f"  {r['symbol']:<16} {r['ltp']:>10.2f} {r['ema9']:>10.2f} {r['gap_pct']:>7.2f}% {r['day_change_pct']:>+7.2f}% {r['proximity_pct']:>+7.2f}% {r['touch_day']:<6} {r['sector']}")
         print("="*70 + "\n")
 
-    # Save to DB
+    # Save scan log (results already saved in batches)
     if DB_TYPE == 'postgresql':
         with db_engine.connect() as conn:
-            conn.execute(text("DELETE FROM scan_results WHERE scan_date = :scan_date"), {"scan_date": scan_date})
-            for r in results:
-                conn.execute(text("""INSERT INTO scan_results
-                    (scan_date, symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope,
-                     proximity_pct, day_change_pct, sector, touch_day)
-                    VALUES (:scan_date, :symbol, :ltp, :ema9, :ema21, :gap_pct, :ema9_slope, :ema21_slope,
-                            :proximity_pct, :day_change_pct, :sector, :touch_day)"""), {
-                    "scan_date": scan_date,
-                    "symbol": r["symbol"],
-                    "ltp": r["ltp"],
-                    "ema9": r["ema9"],
-                    "ema21": r["ema21"],
-                    "gap_pct": r["gap_pct"],
-                    "ema9_slope": r["ema9_slope"],
-                    "ema21_slope": r["ema21_slope"],
-                    "proximity_pct": r["proximity_pct"],
-                    "day_change_pct": r["day_change_pct"],
-                    "sector": r["sector"],
-                    "touch_day": r["touch_day"]
-                })
             conn.execute(text("""INSERT INTO scan_log (scan_date, total_stocks, passed, duration_sec) 
                                 VALUES (:scan_date, :total_stocks, :passed, :duration_sec)"""), {
                 "scan_date": scan_date,
@@ -487,15 +521,6 @@ def run_scan(console=False):
     else:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("DELETE FROM scan_results WHERE scan_date = ?", (scan_date,))
-        for r in results:
-            c.execute("""INSERT INTO scan_results
-                (scan_date, symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope,
-                 proximity_pct, day_change_pct, sector, touch_day)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (scan_date, r["symbol"], r["ltp"], r["ema9"], r["ema21"],
-                 r["gap_pct"], r["ema9_slope"], r["ema21_slope"], r["proximity_pct"],
-                 r["day_change_pct"], r["sector"], r["touch_day"]))
         c.execute("INSERT INTO scan_log (scan_date, total_stocks, passed, duration_sec) VALUES (?,?,?,?)",
                   (scan_date, len(symbols), len(results), elapsed))
         conn.commit()
