@@ -587,7 +587,9 @@ def progress():
 def trigger_scan():
     if scan_progress["running"]:
         return jsonify({"status": "already_running"})
-    t = threading.Thread(target=run_scan, args=(False,), daemon=True)
+    
+    # Use non-daemon thread to prevent Render from killing it
+    t = threading.Thread(target=run_scan, args=(False,), daemon=False)
     t.start()
     return jsonify({"status": "started"})
 

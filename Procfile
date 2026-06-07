@@ -1,5 +1,3 @@
 # Web service (dashboard - always on)
-web: gunicorn app:app --timeout 600 --workers 1
-
-# Cron worker (runs scheduled scans)
-# Note: Railway cron is configured in railway.json, not here
+# Using gevent for better async handling on Render
+web: gunicorn app:app --worker-class gevent --workers 2 --timeout 600 --keep-alive 5
