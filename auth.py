@@ -91,18 +91,38 @@ class UpstoxClient:
                     instruments = []
                     # JSON format is a dict with instrument keys
                     if isinstance(data, dict):
+                        # Log structure for debugging
+                        sample_keys = list(data.keys())[:3]
+                        print(f"    JSON type: dict with {len(data)} keys")
+                        if sample_keys:
+                            print(f"    Sample keys: {sample_keys}")
+                            sample_val = data[sample_keys[0]]
+                            if isinstance(sample_val, dict):
+                                print(f"    Sample value keys: {list(sample_val.keys())[:10]}")
+                        
                         for key, inst in data.items():
+                            if not isinstance(inst, dict):
+                                continue
                             # Filter by exchange and segment
                             segment = inst.get("segment", "")
                             inst_type = inst.get("instrument_type", "")
-                            if exchange == "NSE" and segment == "NSE_EQ" and inst_type in ("EQ", "BE", ""):
+                            exchange_val = inst.get("exchange", "")
+                            # Accept NSE_EQ instruments (equity stocks)
+                            if segment == "NSE_EQ" and inst_type in ("EQ", "BE", "BZ", ""):
                                 instruments.append({
                                     "tradingsymbol": inst.get("trading_symbol", ""),
                                     "instrument_key": inst.get("instrument_key", key),
                                     "instrument_token": inst.get("exchange_token", ""),
-                                    "exchange": inst.get("exchange", ""),
+                                    "exchange": exchange_val,
                                     "isin": inst.get("isin", "")
                                 })
+                    elif isinstance(data, list):
+                        # Maybe it's a list format
+                        print(f"    JSON type: list with {len(data)} items")
+                        if data:
+                            print(f"    Sample item keys: {list(data[0].keys())[:10] if isinstance(data[0], dict) else 'not dict'}")
+                    
+                    print(f"    Filtered to {len(instruments)} NSE_EQ instruments")
                     
                     if instruments:
                         self._instrument_cache = {"exchange": exchange, "data": instruments}
