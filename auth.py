@@ -98,6 +98,11 @@ class UpstoxClient:
         if self._instrument_cache is None:
             self.instruments("NSE")
         
+        # If still None (download failed), initialize empty cache
+        if self._instrument_cache is None:
+            self._instrument_cache = {"exchange": "NSE", "data": []}
+            return None
+        
         for inst in self._instrument_cache["data"]:
             if inst.get("tradingsymbol") == symbol:
                 return inst.get("instrument_token")
