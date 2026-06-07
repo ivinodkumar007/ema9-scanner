@@ -1232,11 +1232,10 @@ async function scanNextChunk(){
     if(scanIdx>=scanTotal){
       document.getElementById('progText').textContent='Done! '+scanTotal+' stocks in '+scanChunks+' chunks ('+data.results_count+' total matches)';
       stopScan();
-      loadResults(); // Load final results after scan completes
+      loadResults(); // Load final results
     } else {
-      // Schedule next chunk IMMEDIATELY, update results asynchronously
-      setTimeout(scanNextChunk, 500);
-      setTimeout(loadResults, 100); // Update UI after 100ms (non-blocking)
+      // NO loadResults during scan - just fire next chunk immediately
+      setTimeout(scanNextChunk, 200); // 200ms delay between chunks
     }
   } catch(e){
     document.getElementById('progText').textContent='Error: '+e.message;
