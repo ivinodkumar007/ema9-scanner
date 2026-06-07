@@ -1064,8 +1064,8 @@ def open_in_tradingview(symbol):
 
 @app.route("/")
 def dashboard():
-    """Redirect to chunk mode for Render compatibility."""
-    return redirect("/chunk")
+    """Main dashboard - original UI with chunk-based scanning for Render."""
+    return render_template_string(HTML_TEMPLATE)
 
 
 @app.route("/chunk")
@@ -1209,6 +1209,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <div class="footer">EMA9 Pullback Scanner &middot; LOW &plusmn;2% touch &middot; LTP +0.5% to +4% &middot; LTP &lt; EMA9+6% &middot; Sector filter &middot; Port 5037</div>
 <script>
 let tableData=[], sortCol=6, sortDir='asc';
+let scanRunning=false, scanIdx=0, scanTotal=0, scanChunks=0;
 
 function toast(text){
   const t=document.getElementById('progText');
@@ -1232,28 +1233,57 @@ function openTV(e, sym){
 }
 
 function startScan(){
+  if(scanRunning) return;
+  scanRunning=true; scanIdx=0; scanTotal=0; scanChunks=0;
   const b=document.getElementById('btnScan');
   b.disabled=true; b.textContent='SCANNING...';
-  fetch('/scan',{method:'POST'}).then(()=>listenProgress());
+  document.getElementById('progText').textContent='Starting scan...';
+  scanNextChunk();
 }
 
-function listenProgress(){
-  const es=new EventSource('/progress');
-  es.onmessage=e=>{
-    const d=JSON.parse(e.data);
-    if(d.done){es.close(); loadResults(); return;}
-    const p=d.total?Math.round(d.current/d.total*100):0;
-    document.getElementById('progBar').style.width=p+'%';
-    document.getElementById('progText').textContent=d.phase+' '+(d.total?d.current+'/'+d.total+' '+d.symbol:'');
-  };
-  es.onerror=()=>{es.close(); loadResults();};
+async function scanNextChunk(){
+  if(!scanRunning) return;
+  try{
+    const resp=await fetch('/scan-chunk',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({start_idx:scanIdx})
+    });
+    const data=await resp.json();
+    if(data.error){
+      document.getElementById('progText').textContent='Error: '+data.error;
+      stopScan(); return;
+    }
+    scanIdx=data.next_idx; scanTotal=data.total; scanChunks++;
+    const pct=Math.round(scanIdx/scanTotal*100);
+    document.getElementById('progBar').style.width=pct+'%';
+    document.getElementById('progText').textContent=scanIdx+'/'+scanTotal+' ('+data.results_count+' matches)';
+    loadResults();
+    if(scanIdx>=scanTotal){
+      document.getElementById('progText').textContent='Done! '+scanTotal+' stocks in '+scanChunks+' chunks ('+data.results_count+' total matches)';
+      stopScan();
+    } else {
+      setTimeout(scanNextChunk, 1000);
+    }
+  } catch(e){
+    document.getElementById('progText').textContent='Error: '+e.message;
+    setTimeout(scanNextChunk, 3000);
+  }
+}
+
+function stopScan(){
+  scanRunning=false;
+  const b=document.getElementById('btnScan');
+  b.disabled=false; b.textContent='\u25B6 SCAN NOW';
 }
 
 function loadResults(){
   fetch('/results').then(r=>r.json()).then(data=>{
     tableData=data;
-    document.getElementById('btnScan').disabled=false;
-    document.getElementById('btnScan').textContent='\u25B6 SCAN NOW';
+    if(!scanRunning){
+      document.getElementById('btnScan').disabled=false;
+      document.getElementById('btnScan').textContent='\u25B6 SCAN NOW';
+    }
     document.getElementById('totalCount').textContent=data.length;
     if(data.length) document.getElementById('lastScan').textContent=data[0].scan_date;
     populateSectorDropdown();
