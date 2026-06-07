@@ -1,57 +1,91 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>EMA9 Scanner - Chunk Mode</title>
+    <title>EMA9 Scanner - Auto Scan</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body { font-family: Arial, sans-serif; max-width: 800px; margin: 20px auto; padding: 20px; }
         .btn { padding: 15px 30px; font-size: 16px; margin: 10px 5px; cursor: pointer; border: none; border-radius: 5px; }
-        .btn-primary { background: #007bff; color: white; }
-        .btn-success { background: #28a745; color: white; }
+        .btn-start { background: #28a745; color: white; font-size: 20px; padding: 20px 40px; }
+        .btn-stop { background: #dc3545; color: white; font-size: 20px; padding: 20px 40px; }
+        .btn-success { background: #17a2b8; color: white; }
         .btn:disabled { background: #6c757d; cursor: not-allowed; }
         .status { margin: 20px 0; padding: 15px; background: #f8f9fa; border-radius: 5px; }
         .progress { margin: 10px 0; }
+        .progress-bar-container { width: 100%; background: #ddd; border-radius: 10px; height: 25px; margin: 10px 0; }
+        .progress-bar-fill { background: #28a745; height: 100%; border-radius: 10px; transition: width 0.3s; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 14px; }
         #results { margin-top: 20px; }
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
         th { background: #f8f9fa; }
+        .log { max-height: 200px; overflow-y: auto; background: #1e1e1e; color: #0f0; padding: 10px; border-radius: 5px; font-family: monospace; font-size: 13px; margin-top: 10px; }
     </style>
 </head>
 <body>
-    <h1>EMA9 Pullback Scanner - Chunk Mode</h1>
+    <h1>EMA9 Pullback Scanner</h1>
     
     <div>
-        <button class="btn btn-primary" id="btnScanChunk" onclick="scanNextChunk()">
-            📊 Scan Next 50 Stocks
+        <button class="btn btn-start" id="btnStart" onclick="startAutoScan()">
+            ▶ START AUTO SCAN
+        </button>
+        <button class="btn btn-stop" id="btnStop" onclick="stopAutoScan()" disabled>
+            ⏹ STOP
         </button>
         <button class="btn btn-success" onclick="loadResults()">
-            🔄 Refresh Results
+            🔄 Refresh
         </button>
     </div>
     
     <div class="status">
-        <div id="status">Ready - Click "Scan Next 50 Stocks" to begin</div>
-        <div class="progress" id="progress" style="display:none;">
-            Progress: <span id="progressText">0 / 0</span>
+        <div id="status">Ready - Click START to scan all stocks automatically</div>
+        <div class="progress-bar-container">
+            <div class="progress-bar-fill" id="progBar" style="width: 0%;">0%</div>
         </div>
+        <div>Scanned: <strong id="progressText">0 / 0</strong></div>
         <div>Results: <strong id="resultCount">0</strong> stocks</div>
+        <div>Chunks: <strong id="chunkCount">0</strong></div>
     </div>
+    
+    <div class="log" id="log"></div>
     
     <div id="results"></div>
     
     <script>
         let currentIdx = 0;
         let totalStocks = 0;
+        let autoRunning = false;
+        let chunksCompleted = 0;
+        
+        function addLog(msg) {
+            const log = document.getElementById('log');
+            const time = new Date().toLocaleTimeString();
+            log.innerHTML = '<div>[' + time + '] ' + msg + '</div>' + log.innerHTML;
+        }
+        
+        async function startAutoScan() {
+            autoRunning = true;
+            currentIdx = 0;
+            chunksCompleted = 0;
+            document.getElementById('btnStart').disabled = true;
+            document.getElementById('btnStop').disabled = false;
+            addLog('Auto scan started!');
+            document.getElementById('chunkCount').textContent = '0';
+            scanNextChunk();
+        }
+        
+        function stopAutoScan() {
+            autoRunning = false;
+            document.getElementById('btnStart').disabled = false;
+            document.getElementById('btnStop').disabled = true;
+            addLog('Auto scan stopped at stock ' + currentIdx);
+            document.getElementById('status').textContent = 'Stopped at ' + currentIdx + ' / ' + totalStocks;
+        }
         
         async function scanNextChunk() {
-            const btn = document.getElementById('btnScanChunk');
-            const status = document.getElementById('status');
-            const progress = document.getElementById('progress');
+            if (!autoRunning) return;
             
-            btn.disabled = true;
-            btn.textContent = 'Scanning...';
-            status.textContent = 'Scanning stocks ' + (currentIdx + 1) + '-' + (currentIdx + 50);
-            progress.style.display = 'block';
+            const status = document.getElementById('status');
+            status.textContent = 'Scanning stocks ' + (currentIdx + 1) + '-' + (currentIdx + 50) + '...';
             
             try {
                 const response = await fetch('/scan-chunk', {
@@ -64,26 +98,44 @@
                 
                 if (data.error) {
                     status.textContent = 'Error: ' + data.error;
-                } else {
-                    currentIdx = data.next_idx;
-                    totalStocks = data.total;
-                    status.textContent = '✓ ' + data.message + ' (' + data.results_count + ' results)';
-                    document.getElementById('progressText').textContent = currentIdx + ' / ' + totalStocks;
-                    
-                    if (currentIdx >= totalStocks) {
-                        status.textContent = '✓ Scan complete! All ' + totalStocks + ' stocks processed.';
-                        btn.textContent = '✓ Scan Complete';
-                    } else {
-                        btn.disabled = false;
-                        btn.textContent = '📊 Scan Next 50 Stocks (' + (totalStocks - currentIdx) + ' left)';
-                    }
-                    
-                    loadResults();
+                    addLog('ERROR: ' + data.error);
+                    stopAutoScan();
+                    return;
+                }
+                
+                currentIdx = data.next_idx;
+                totalStocks = data.total;
+                chunksCompleted++;
+                
+                const pct = Math.round((currentIdx / totalStocks) * 100);
+                document.getElementById('progBar').style.width = pct + '%';
+                document.getElementById('progBar').textContent = pct + '%';
+                document.getElementById('progressText').textContent = currentIdx + ' / ' + totalStocks;
+                document.getElementById('chunkCount').textContent = chunksCompleted;
+                
+                addLog('Chunk ' + chunksCompleted + ': Scanned ' + (data.end_idx - data.start_idx) + ' stocks, found ' + data.results_count + ' matches');
+                status.textContent = data.message + ' (' + data.results_count + ' matches)';
+                
+                loadResults();
+                
+                if (currentIdx >= totalStocks) {
+                    status.textContent = '✓ Scan complete! All ' + totalStocks + ' stocks processed in ' + chunksCompleted + ' chunks.';
+                    addLog('✓ SCAN COMPLETE! ' + totalStocks + ' stocks in ' + chunksCompleted + ' chunks');
+                    stopAutoScan();
+                    document.getElementById('btnStart').textContent = '▶ RESTART SCAN';
+                } else if (autoRunning) {
+                    // Auto-continue after 2 second delay
+                    status.textContent += ' | Next chunk in 2s...';
+                    setTimeout(scanNextChunk, 2000);
                 }
             } catch (error) {
                 status.textContent = 'Error: ' + error.message;
-                btn.disabled = false;
-                btn.textContent = '📊 Scan Next 50 Stocks';
+                addLog('ERROR: ' + error.message);
+                // Retry after 5 seconds
+                if (autoRunning) {
+                    status.textContent += ' | Retrying in 5s...';
+                    setTimeout(scanNextChunk, 5000);
+                }
             }
         }
         
@@ -94,9 +146,18 @@
                 document.getElementById('resultCount').textContent = data.length;
                 
                 if (data.length > 0) {
-                    let html = '<table><tr><th>Symbol</th><th>LTP</th><th>Day Change%</th><th>Date</th></tr>';
+                    let html = '<table><tr><th>Symbol</th><th>LTP</th><th>EMA9</th><th>Gap%</th><th>Chg%</th><th>Prox%</th><th>Touch</th><th>Sector</th></tr>';
                     data.forEach(r => {
-                        html += '<tr><td>' + r.symbol + '</td><td>' + r.ltp + '</td><td>' + r.day_change_pct + '%</td><td>' + r.scan_date + '</td></tr>';
+                        html += '<tr>';
+                        html += '<td><strong>' + r.symbol + '</strong></td>';
+                        html += '<td>' + r.ltp + '</td>';
+                        html += '<td>' + r.ema9 + '</td>';
+                        html += '<td>' + r.gap_pct + '%</td>';
+                        html += '<td style="color:' + (r.day_change_pct > 0 ? 'green' : 'red') + '">' + r.day_change_pct + '%</td>';
+                        html += '<td>' + r.proximity_pct + '%</td>';
+                        html += '<td>' + r.touch_day + '</td>';
+                        html += '<td>' + (r.sector || '') + '</td>';
+                        html += '</tr>';
                     });
                     html += '</table>';
                     document.getElementById('results').innerHTML = html;
