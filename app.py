@@ -16,6 +16,7 @@ import os, sys, json, time, threading, sqlite3, smtplib, io, re, subprocess, pla
 from datetime import datetime, timedelta, date
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 import requests as http_requests
@@ -688,7 +689,7 @@ def scan_chunk():
     try:
         data = request.json if request.is_json else {}
         start_idx = data.get('start_idx', 0)
-        chunk_size = 50
+        chunk_size = 100  # 20 threads process 100 stocks in parallel
         
         symbols = load_symbols()
         if not symbols:
@@ -731,15 +732,13 @@ def scan_chunk():
                        "gap": 0, "ema9_slope": 0, "ema21_slope": 0, "no_touch": 0,
                        "day_change": 0, "ltp_cap": 0, "error": 0}
         
-        for idx, sym_info in enumerate(chunk_symbols):
-            actual_idx = start_idx + idx
+        def process_stock(sym_info):
+            """Process a single stock - returns result dict or None."""
             sym = sym_info["symbol"] if isinstance(sym_info, dict) else sym_info
             isin = sym_info.get("isin", "") if isinstance(sym_info, dict) else ""
-            scan_progress["current"] = actual_idx + 1
-            scan_progress["symbol"] = sym
+            local_skip = {}
             
             try:
-                # UpstoxClient: use ISIN if available for exact instrument lookup
                 is_upstox = hasattr(kite, '_get_instrument_token')
                 
                 if is_upstox:
@@ -747,13 +746,11 @@ def scan_chunk():
                 else:
                     token = _get_instrument_token(kite, sym)
                     if not token:
-                        skip_reasons["no_token"] += 1
-                        continue
+                        return None, {"no_token": 1}
                     candles = kite.historical_data(instrument_token=token, from_date=from_date, to_date=today, interval="day")
                 
                 if not candles or len(candles) < 30:
-                    skip_reasons["no_candles"] += 1
-                    continue
+                    return None, {"no_candles": 1}
                 
                 closes = [c["close"] for c in candles]
                 opens  = [c["open"]  for c in candles]
@@ -763,7 +760,7 @@ def scan_chunk():
                 ema9_all  = calc_ema(closes, 9)
                 ema21_all = calc_ema(closes, 21)
                 if not ema9_all or not ema21_all:
-                    continue
+                    return None, {"ema_len": 1}
                 
                 offset = 21 - 9
                 ema9  = ema9_all[offset:]
@@ -777,38 +774,27 @@ def scan_chunk():
                 aligned_lows   = lows[-min_len:]
                 
                 if len(ema9) < 6 or len(ema21) < 6:
-                    skip_reasons["ema_len"] += 1
-                    continue
+                    return None, {"ema_len": 1}
                 
                 cur_ema9  = ema9[-1]
                 cur_ema21 = ema21[-1]
                 cur_close = aligned_closes[-1]
-                prev_close = aligned_closes[-2] if len(aligned_closes) > 1 else cur_close
                 
-                # F1: EMA9 > EMA21
                 if cur_ema9 <= cur_ema21:
-                    skip_reasons["ema9_below_ema21"] += 1
-                    continue
+                    return None, {"ema9_below_ema21": 1}
                 
-                # F2: Gap %
                 gap_pct = ((cur_ema9 - cur_ema21) / cur_ema21) * 100
                 if gap_pct < GAP_PCT_MIN or gap_pct > GAP_PCT_MAX:
-                    skip_reasons["gap"] += 1
-                    continue
+                    return None, {"gap": 1}
                 
-                # F3: EMA9 Slope
                 ema9_slope = ((ema9[-1] - ema9[-6]) / ema9[-6]) * 100
                 if ema9_slope < EMA9_SLOPE5_MIN or ema9_slope > EMA9_SLOPE5_MAX:
-                    skip_reasons["ema9_slope"] += 1
-                    continue
+                    return None, {"ema9_slope": 1}
                 
-                # F4: EMA21 Slope
                 ema21_slope = ((ema21[-1] - ema21[-6]) / ema21[-6]) * 100
                 if ema21_slope < EMA21_SLOPE5_MIN or ema21_slope > EMA21_SLOPE5_MAX:
-                    skip_reasons["ema21_slope"] += 1
-                    continue
+                    return None, {"ema21_slope": 1}
                 
-                # F5: EMA9 Touch
                 touch_day = ""
                 lookback = min(TOUCH_LOOKBACK, len(aligned_closes), len(ema9))
                 for d in range(lookback):
@@ -823,12 +809,9 @@ def scan_chunk():
                         break
                 
                 if not touch_day:
-                    skip_reasons["no_touch"] += 1
-                    continue
+                    return None, {"no_touch": 1}
                 
-                pass1_count += 1
-                
-                # PASS 2: LTP checks - use OHLC API for live/last-trading-day prices
+                # PASS 2: LTP checks
                 ltp = 0
                 prev_close = 0
                 try:
@@ -836,19 +819,16 @@ def scan_chunk():
                     if isinstance(ohlc_data, dict) and "last_price" in ohlc_data:
                         ltp = ohlc_data["last_price"]
                         prev_close = ohlc_data["ohlc"]["close"]
-                        # On weekends, OHLC might return 0 or stale data
                         if ltp <= 0 or prev_close <= 0:
                             ltp = cur_close
                             prev_close = aligned_closes[-2] if len(aligned_closes) > 1 else cur_close
                     else:
                         ltp = cur_close
                         prev_close = aligned_closes[-2] if len(aligned_closes) > 1 else cur_close
-                except Exception as e:
-                    print(f"  OHLC failed for {sym}: {e}")
+                except Exception:
                     ltp = cur_close
                     prev_close = aligned_closes[-2] if len(aligned_closes) > 1 else cur_close
                 
-                # Fallback: if still no valid prices, use historical data
                 if ltp <= 0:
                     ltp = cur_close
                 if prev_close <= 0:
@@ -856,22 +836,15 @@ def scan_chunk():
                 
                 day_change = ((ltp - prev_close) / prev_close) * 100 if prev_close else 0
                 
-                # Debug log first few stocks
-                if idx < 5:
-                    print(f"  [{start_idx+idx+1}] {sym}: LTP={ltp:.2f} prev={prev_close:.2f} chg={day_change:+.2f}% ema9={cur_ema9:.2f}")
-                
                 if day_change < INTRADAY_GAIN_MIN or day_change > INTRADAY_GAIN_MAX:
-                    skip_reasons["day_change"] += 1
-                    continue
+                    return None, {"day_change": 1}
                 if ltp > cur_ema9 * (1 + LTP_EMA9_MAX / 100):
-                    skip_reasons["ltp_cap"] += 1
-                    continue
+                    return None, {"ltp_cap": 1}
                 
                 proximity_pct = ((ltp - cur_ema9) / cur_ema9) * 100
-                
                 sector = get_sector(sym)
                 
-                chunk_results.append({
+                return {
                     "symbol": sym, "isin": isin, "ltp": round(ltp, 2),
                     "ema9": round(cur_ema9, 2), "ema21": round(cur_ema21, 2),
                     "gap_pct": round(gap_pct, 2), "ema9_slope": round(ema9_slope, 2),
@@ -879,16 +852,27 @@ def scan_chunk():
                     "proximity_pct": round(proximity_pct, 2),
                     "day_change_pct": round(day_change, 2),
                     "sector": sector, "touch_day": touch_day
-                })
+                }, {"pass": 1}
                 
             except Exception as e:
-                skip_reasons["error"] += 1
-                error_count += 1
-                if error_count <= 3:
-                    print(f"  ERROR on {sym}: {e}")
-            
-            if (idx + 1) % 5 == 0:
-                time.sleep(0.1)
+                return None, {"error": 1}
+        
+        # Process stocks in parallel with 20 threads
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            futures = {executor.submit(process_stock, s): s for s in chunk_symbols}
+            for future in as_completed(futures):
+                result, skips = future.result()
+                # Merge skip reasons
+                for k, v in skips.items():
+                    if k == "pass":
+                        pass1_count += 1
+                    elif k in skip_reasons:
+                        skip_reasons[k] += v
+                    else:
+                        skip_reasons["error"] += v
+                        error_count += v
+                if result:
+                    chunk_results.append(result)
         
         # Log chunk summary
         print(f"\n  Chunk {start_idx+1}-{end_idx} Summary:")
