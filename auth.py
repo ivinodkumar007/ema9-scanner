@@ -66,31 +66,40 @@ class UpstoxClient:
         if self._instrument_cache and self._instrument_cache.get("exchange") == exchange:
             return self._instrument_cache["data"]
         
-        try:
-            import csv
-            import io
-            
-            # Upstox public instrument file URL
-            url = f"https://assets.upstox.com/assets/upstox-assets/market_data/instruments/{exchange.lower()}_contracts.csv"
-            
-            r = requests.get(url, timeout=30)
-            if r.status_code == 200:
-                # Parse CSV
-                csv_file = io.StringIO(r.text)
-                reader = csv.DictReader(csv_file)
-                instruments = []
-                for row in reader:
-                    instruments.append({
-                        "tradingsymbol": row.get("tradingsymbol", ""),
-                        "instrument_token": row.get("instrument_token", ""),
-                        "exchange": row.get("exchange", "")
-                    })
-                self._instrument_cache = {"exchange": exchange, "data": instruments}
-                print(f"  ✓ Loaded {len(instruments)} {exchange} instruments")
-                return instruments
-        except Exception as e:
-            print(f"  ⚠ Instrument download error: {e}")
+        # Try multiple Upstox instrument URLs
+        urls = [
+            f"https://assets.upstox.com/assets/upstox-assets/market_data/instruments/{exchange.lower()}_contracts.csv",
+            f"https://assets.upstox.com/market-quote/instruments/exchange/{exchange.lower()}.csv",
+        ]
         
+        for url in urls:
+            try:
+                print(f"  Downloading instruments from: {url[:80]}...")
+                r = requests.get(url, timeout=30)
+                print(f"  Response: {r.status_code}, size: {len(r.text)} bytes")
+                
+                if r.status_code == 200 and len(r.text) > 100:
+                    import csv
+                    import io
+                    
+                    csv_file = io.StringIO(r.text)
+                    reader = csv.DictReader(csv_file)
+                    instruments = []
+                    for row in reader:
+                        instruments.append({
+                            "tradingsymbol": row.get("tradingsymbol", ""),
+                            "instrument_token": row.get("instrument_token", ""),
+                            "exchange": row.get("exchange", "")
+                        })
+                    
+                    if instruments:
+                        self._instrument_cache = {"exchange": exchange, "data": instruments}
+                        print(f"  ✓ Loaded {len(instruments)} {exchange} instruments")
+                        return instruments
+            except Exception as e:
+                print(f"  ⚠ Instrument download error from {url[:60]}: {e}")
+        
+        print(f"  ⚠ Failed to load instruments from all URLs")
         return []
     
     def _get_instrument_token(self, symbol):
