@@ -1229,12 +1229,14 @@ async function scanNextChunk(){
     const pct=Math.round(scanIdx/scanTotal*100);
     document.getElementById('progBar').style.width=pct+'%';
     document.getElementById('progText').textContent=scanIdx+'/'+scanTotal+' ('+data.results_count+' matches)';
-    loadResults();
     if(scanIdx>=scanTotal){
       document.getElementById('progText').textContent='Done! '+scanTotal+' stocks in '+scanChunks+' chunks ('+data.results_count+' total matches)';
       stopScan();
+      loadResults(); // Load final results after scan completes
     } else {
+      // Schedule next chunk IMMEDIATELY, update results asynchronously
       setTimeout(scanNextChunk, 500);
+      setTimeout(loadResults, 100); // Update UI after 100ms (non-blocking)
     }
   } catch(e){
     document.getElementById('progText').textContent='Error: '+e.message;
