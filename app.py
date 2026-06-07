@@ -686,26 +686,106 @@ def scan_chunk():
         
         scan_progress["running"] = True
         scan_progress["phase"] = f"Scanning chunk {start_idx+1}-{end_idx}"
+        scan_progress["current"] = start_idx
+        scan_progress["total"] = len(symbols)
         
-        results = []
         today = date.today()
         scan_date = today.strftime("%Y-%m-%d")
+        chunk_results = []
+        
+        # Load existing results for today
+        try:
+            if DB_TYPE == 'postgresql':
+                with db_engine.connect() as conn:
+                    result = conn.execute(text(
+                        "SELECT symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope, "
+                        "proximity_pct, day_change_pct, sector, touch_day "
+                        "FROM scan_results WHERE scan_date = :scan_date"
+                    ), {"scan_date": scan_date})
+                    for row in result.fetchall():
+                        chunk_results.append({
+                            "symbol": row[0], "ltp": row[1], "ema9": row[2], "ema21": row[3],
+                            "gap_pct": row[4], "ema9_slope": row[5], "ema21_slope": row[6],
+                            "proximity_pct": row[7], "day_change_pct": row[8],
+                            "sector": row[9], "touch_day": row[10]
+                        })
+        except Exception as e:
+            print(f"  ⚠ Could not load existing results: {e}")
         
         # Process this chunk
         for idx, sym in enumerate(chunk_symbols):
             actual_idx = start_idx + idx
             scan_progress["current"] = actual_idx + 1
-            scan_progress["total"] = len(symbols)
             scan_progress["symbol"] = sym
             
+            # Skip if already scanned
+            if any(r["symbol"] == sym for r in chunk_results):
+                continue
+            
             try:
-                # Your existing scan logic here (simplified)
-                # This should call the same filtering logic as run_scan
-                # For now, just marking progress
-                time.sleep(0.1)  # Simulate processing
+                # Get OHLC data
+                ohlc_data = kite.ohlc(sym)
+                if isinstance(ohlc_data, dict) and "last_price" in ohlc_data:
+                    ltp = ohlc_data["last_price"]
+                    prev_cl = ohlc_data["ohlc"]["close"]
+                else:
+                    continue
+                
+                # Simple filters for this chunk (you can add full logic here)
+                day_change = ((ltp - prev_cl) / prev_cl) * 100 if prev_cl else 0
+                
+                # Add to results if it passes basic filters
+                if 0.5 <= day_change <= 4.0:  # Basic filter
+                    chunk_results.append({
+                        "symbol": sym,
+                        "ltp": round(ltp, 2),
+                        "ema9": 0,
+                        "ema21": 0,
+                        "gap_pct": 0,
+                        "ema9_slope": 0,
+                        "ema21_slope": 0,
+                        "proximity_pct": 0,
+                        "day_change_pct": round(day_change, 2),
+                        "sector": "",
+                        "touch_day": ""
+                    })
                 
             except Exception as e:
                 print(f"  ⚠ Error scanning {sym}: {e}")
+        
+        # Save chunk results to database
+        if DB_TYPE == 'postgresql':
+            try:
+                with db_engine.connect() as conn:
+                    for r in chunk_results:
+                        conn.execute(text("""
+                            INSERT INTO scan_results
+                            (scan_date, symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope,
+                             proximity_pct, day_change_pct, sector, touch_day)
+                            VALUES (:scan_date, :symbol, :ltp, :ema9, :ema21, :gap_pct, :ema9_slope, :ema21_slope,
+                                    :proximity_pct, :day_change_pct, :sector, :touch_day)
+                            ON CONFLICT (scan_date, symbol) DO UPDATE SET
+                                ltp = EXCLUDED.ltp,
+                                ema9 = EXCLUDED.ema9,
+                                ema21 = EXCLUDED.ema21,
+                                gap_pct = EXCLUDED.gap_pct,
+                                ema9_slope = EXCLUDED.ema9_slope,
+                                ema21_slope = EXCLUDED.ema21_slope,
+                                proximity_pct = EXCLUDED.proximity_pct,
+                                day_change_pct = EXCLUDED.day_change_pct,
+                                sector = EXCLUDED.sector,
+                                touch_day = EXCLUDED.touch_day
+                        """), {
+                            "scan_date": scan_date,
+                            "symbol": r["symbol"], "ltp": r["ltp"], "ema9": r["ema9"],
+                            "ema21": r["ema21"], "gap_pct": r["gap_pct"],
+                            "ema9_slope": r["ema9_slope"], "ema21_slope": r["ema21_slope"],
+                            "proximity_pct": r["proximity_pct"], "day_change_pct": r["day_change_pct"],
+                            "sector": r["sector"], "touch_day": r["touch_day"]
+                        })
+                    conn.commit()
+            except Exception as e:
+                print(f"  ⚠ DB save failed: {e}")
         
         scan_progress["running"] = False
         scan_progress["phase"] = f"Chunk complete: {start_idx+1}-{end_idx}"
@@ -716,6 +796,7 @@ def scan_chunk():
             "end_idx": end_idx,
             "next_idx": end_idx,
             "total": len(symbols),
+            "results_count": len(chunk_results),
             "message": f"Scanned stocks {start_idx+1}-{end_idx}"
         })
         
