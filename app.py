@@ -19,7 +19,7 @@ from email.mime.multipart import MIMEMultipart
 
 import pandas as pd
 import requests as http_requests
-from flask import Flask, render_template_string, jsonify, Response, send_file
+from flask import Flask, render_template_string, jsonify, Response, send_file, redirect
 
 from config import *
 from auth import get_kite
@@ -664,118 +664,177 @@ def trigger_scan():
 
 @app.route("/scan-chunk", methods=["POST"])
 def scan_chunk():
-    """Scan next 50 stocks (manual chunk-by-chunk)."""
+    """Scan next 50 stocks with FULL logic (manual chunk-by-chunk for Render)."""
     try:
         data = request.json if request.is_json else {}
         start_idx = data.get('start_idx', 0)
         chunk_size = 50
         
-        # Load symbols
         symbols = load_symbols()
         if not symbols:
             return jsonify({"error": "No symbols loaded"}), 400
         
-        # Authenticate
         kite = get_kite()
         if not kite:
             return jsonify({"error": "Authentication failed"}), 400
         
-        # Get chunk of symbols
         end_idx = min(start_idx + chunk_size, len(symbols))
         chunk_symbols = symbols[start_idx:end_idx]
         
+        today = date.today()
+        from_date = today - timedelta(days=CANDLE_DAYS)
+        scan_date = today.strftime("%Y-%m-%d")
+        
         scan_progress["running"] = True
-        scan_progress["phase"] = f"Scanning chunk {start_idx+1}-{end_idx}"
+        scan_progress["phase"] = f"Scanning stocks {start_idx+1}-{end_idx}"
         scan_progress["current"] = start_idx
         scan_progress["total"] = len(symbols)
         
-        today = date.today()
-        scan_date = today.strftime("%Y-%m-%d")
         chunk_results = []
         
-        # Load existing results for today
-        try:
-            if DB_TYPE == 'postgresql':
+        for idx, sym in enumerate(chunk_symbols):
+            actual_idx = start_idx + idx
+            scan_progress["current"] = actual_idx + 1
+            scan_progress["symbol"] = sym
+            
+            try:
+                token = _get_instrument_token(kite, sym)
+                if not token:
+                    continue
+                
+                if hasattr(kite, '_get_instrument_token'):
+                    candles = kite.historical_data(symbol=sym, from_date=from_date, to_date=today, interval="day")
+                else:
+                    candles = kite.historical_data(instrument_token=token, from_date=from_date, to_date=today, interval="day")
+                
+                if not candles or len(candles) < 30:
+                    continue
+                
+                closes = [c["close"] for c in candles]
+                opens  = [c["open"]  for c in candles]
+                highs  = [c["high"]  for c in candles]
+                lows   = [c["low"]   for c in candles]
+                
+                ema9_all  = calc_ema(closes, 9)
+                ema21_all = calc_ema(closes, 21)
+                if not ema9_all or not ema21_all:
+                    continue
+                
+                offset = 21 - 9
+                ema9  = ema9_all[offset:]
+                ema21 = ema21_all[:]
+                min_len = min(len(ema9), len(ema21))
+                ema9  = ema9[-min_len:]
+                ema21 = ema21[-min_len:]
+                aligned_closes = closes[-min_len:]
+                aligned_opens  = opens[-min_len:]
+                aligned_highs  = highs[-min_len:]
+                aligned_lows   = lows[-min_len:]
+                
+                if len(ema9) < 6 or len(ema21) < 6:
+                    continue
+                
+                cur_ema9  = ema9[-1]
+                cur_ema21 = ema21[-1]
+                cur_close = aligned_closes[-1]
+                prev_close = aligned_closes[-2] if len(aligned_closes) > 1 else cur_close
+                
+                # F1: EMA9 > EMA21
+                if cur_ema9 <= cur_ema21:
+                    continue
+                
+                # F2: Gap %
+                gap_pct = ((cur_ema9 - cur_ema21) / cur_ema21) * 100
+                if gap_pct < GAP_PCT_MIN or gap_pct > GAP_PCT_MAX:
+                    continue
+                
+                # F3: EMA9 Slope
+                ema9_slope = ((ema9[-1] - ema9[-6]) / ema9[-6]) * 100
+                if ema9_slope < EMA9_SLOPE5_MIN or ema9_slope > EMA9_SLOPE5_MAX:
+                    continue
+                
+                # F4: EMA21 Slope
+                ema21_slope = ((ema21[-1] - ema21[-6]) / ema21[-6]) * 100
+                if ema21_slope < EMA21_SLOPE5_MIN or ema21_slope > EMA21_SLOPE5_MAX:
+                    continue
+                
+                # F5: EMA9 Touch
+                touch_day = ""
+                lookback = min(TOUCH_LOOKBACK, len(aligned_closes), len(ema9))
+                for d in range(lookback):
+                    day_close = aligned_closes[-(d+1)]
+                    day_open  = aligned_opens[-(d+1)]
+                    day_low   = aligned_lows[-(d+1)]
+                    day_ema9  = ema9[-(d+1)]
+                    lower = day_ema9 * (1 - TOUCH_BELOW)
+                    upper = day_ema9 * (1 + TOUCH_ABOVE)
+                    if lower <= day_low <= upper and day_close > day_open:
+                        touch_day = f"T-{d}" if d > 0 else "T-0"
+                        break
+                
+                if not touch_day:
+                    continue
+                
+                # PASS 2: LTP checks
+                ltp = cur_close  # Use last close as LTP
+                day_change = ((ltp - prev_close) / prev_close) * 100 if prev_close else 0
+                
+                if day_change < INTRADAY_GAIN_MIN or day_change > INTRADAY_GAIN_MAX:
+                    continue
+                if ltp > cur_ema9 * (1 + LTP_EMA9_MAX / 100):
+                    continue
+                
+                proximity_pct = ((ltp - cur_ema9) / cur_ema9) * 100
+                
+                sector = get_sector(sym)
+                
+                chunk_results.append({
+                    "symbol": sym, "ltp": round(ltp, 2),
+                    "ema9": round(cur_ema9, 2), "ema21": round(cur_ema21, 2),
+                    "gap_pct": round(gap_pct, 2), "ema9_slope": round(ema9_slope, 2),
+                    "ema21_slope": round(ema21_slope, 2),
+                    "proximity_pct": round(proximity_pct, 2),
+                    "day_change_pct": round(day_change, 2),
+                    "sector": sector, "touch_day": touch_day
+                })
+                
+            except Exception:
+                pass
+            
+            if (idx + 1) % 3 == 0:
+                time.sleep(0.35)
+        
+        # Save results to DB
+        if DB_TYPE == 'postgresql':
+            try:
                 with db_engine.connect() as conn:
+                    conn.execute(text("DELETE FROM scan_results WHERE scan_date = :scan_date"), {"scan_date": scan_date})
+                    # Load existing + new
+                    all_existing = []
                     result = conn.execute(text(
                         "SELECT symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope, "
                         "proximity_pct, day_change_pct, sector, touch_day "
                         "FROM scan_results WHERE scan_date = :scan_date"
                     ), {"scan_date": scan_date})
                     for row in result.fetchall():
-                        chunk_results.append({
+                        all_existing.append({
                             "symbol": row[0], "ltp": row[1], "ema9": row[2], "ema21": row[3],
                             "gap_pct": row[4], "ema9_slope": row[5], "ema21_slope": row[6],
                             "proximity_pct": row[7], "day_change_pct": row[8],
                             "sector": row[9], "touch_day": row[10]
                         })
-        except Exception as e:
-            print(f"  ⚠ Could not load existing results: {e}")
-        
-        # Process this chunk
-        for idx, sym in enumerate(chunk_symbols):
-            actual_idx = start_idx + idx
-            scan_progress["current"] = actual_idx + 1
-            scan_progress["symbol"] = sym
-            
-            # Skip if already scanned
-            if any(r["symbol"] == sym for r in chunk_results):
-                continue
-            
-            try:
-                # Get OHLC data
-                ohlc_data = kite.ohlc(sym)
-                if isinstance(ohlc_data, dict) and "last_price" in ohlc_data:
-                    ltp = ohlc_data["last_price"]
-                    prev_cl = ohlc_data["ohlc"]["close"]
-                else:
-                    continue
-                
-                # Simple filters for this chunk (you can add full logic here)
-                day_change = ((ltp - prev_cl) / prev_cl) * 100 if prev_cl else 0
-                
-                # Add to results if it passes basic filters
-                if 0.5 <= day_change <= 4.0:  # Basic filter
-                    chunk_results.append({
-                        "symbol": sym,
-                        "ltp": round(ltp, 2),
-                        "ema9": 0,
-                        "ema21": 0,
-                        "gap_pct": 0,
-                        "ema9_slope": 0,
-                        "ema21_slope": 0,
-                        "proximity_pct": 0,
-                        "day_change_pct": round(day_change, 2),
-                        "sector": "",
-                        "touch_day": ""
-                    })
-                
-            except Exception as e:
-                print(f"  ⚠ Error scanning {sym}: {e}")
-        
-        # Save chunk results to database
-        if DB_TYPE == 'postgresql':
-            try:
-                with db_engine.connect() as conn:
+                    # Merge
+                    seen_symbols = set(r["symbol"] for r in all_existing)
                     for r in chunk_results:
-                        conn.execute(text("""
-                            INSERT INTO scan_results
+                        if r["symbol"] not in seen_symbols:
+                            all_existing.append(r)
+                    # Re-save all
+                    for r in all_existing:
+                        conn.execute(text("""INSERT INTO scan_results
                             (scan_date, symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope,
                              proximity_pct, day_change_pct, sector, touch_day)
                             VALUES (:scan_date, :symbol, :ltp, :ema9, :ema21, :gap_pct, :ema9_slope, :ema21_slope,
-                                    :proximity_pct, :day_change_pct, :sector, :touch_day)
-                            ON CONFLICT (scan_date, symbol) DO UPDATE SET
-                                ltp = EXCLUDED.ltp,
-                                ema9 = EXCLUDED.ema9,
-                                ema21 = EXCLUDED.ema21,
-                                gap_pct = EXCLUDED.gap_pct,
-                                ema9_slope = EXCLUDED.ema9_slope,
-                                ema21_slope = EXCLUDED.ema21_slope,
-                                proximity_pct = EXCLUDED.proximity_pct,
-                                day_change_pct = EXCLUDED.day_change_pct,
-                                sector = EXCLUDED.sector,
-                                touch_day = EXCLUDED.touch_day
-                        """), {
+                                    :proximity_pct, :day_change_pct, :sector, :touch_day)"""), {
                             "scan_date": scan_date,
                             "symbol": r["symbol"], "ltp": r["ltp"], "ema9": r["ema9"],
                             "ema21": r["ema21"], "gap_pct": r["gap_pct"],
@@ -785,10 +844,10 @@ def scan_chunk():
                         })
                     conn.commit()
             except Exception as e:
-                print(f"  ⚠ DB save failed: {e}")
+                print(f"  DB save error: {e}")
         
         scan_progress["running"] = False
-        scan_progress["phase"] = f"Chunk complete: {start_idx+1}-{end_idx}"
+        scan_progress["phase"] = f"Chunk complete: {start_idx+1}-{end_idx} ({len(chunk_results)} matches)"
         
         return jsonify({
             "status": "complete",
@@ -923,7 +982,8 @@ def open_in_tradingview(symbol):
 
 @app.route("/")
 def dashboard():
-    return render_template_string(HTML_TEMPLATE)
+    """Redirect to chunk mode for Render compatibility."""
+    return redirect("/chunk")
 
 
 @app.route("/chunk")
