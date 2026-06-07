@@ -1215,10 +1215,8 @@ function showToast(html, duration){
 }
 function openTV(e, sym){
   e.preventDefault();
-  fetch('/open/'+encodeURIComponent(sym))
-    .then(r=>r.json())
-    .then(d=>{ showToast(d.ok ? '\u2705 Opened <b>NSE:'+sym+'</b> in browser' : '\u274c Failed: '+d.msg, 3000); })
-    .catch(()=>{ showToast('\u274c Failed to open chart', 3000); });
+  var url='https://www.tradingview.com/chart/?symbol=NSE%3A'+encodeURIComponent(sym);
+  window.open(url, '_blank');
 }
 
 function startScan(){
