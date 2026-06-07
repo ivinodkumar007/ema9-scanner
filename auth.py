@@ -195,7 +195,11 @@ class UpstoxClient:
                 
         # token is now instrument_key like "NSE_EQ|INE002A01018"
         instrument_key = token if "|" in str(token) else f"NSE_EQ|{token}"
-        url = f"{UPSTOX_API}/v3/historical-candle/{instrument_key}/{interval}/{from_date.isoformat()}/{to_date.isoformat()}"
+        # V3 API format: /v3/historical-candle/{key}/{unit}/{interval}/{to_date}/{from_date}
+        # Map our interval to V3 unit/interval format
+        unit_map = {"day": "days", "minute": "minutes", "week": "weeks", "month": "months"}
+        unit = unit_map.get(interval, f"{interval}s")  # day -> days
+        url = f"{UPSTOX_API}/v3/historical-candle/{instrument_key}/{unit}/1/{to_date.isoformat()}/{from_date.isoformat()}"
                 
         # Log first few API calls for debugging
         if not hasattr(self, '_api_call_count'):
