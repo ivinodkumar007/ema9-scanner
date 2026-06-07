@@ -688,7 +688,7 @@ def scan_chunk():
     try:
         data = request.json if request.is_json else {}
         start_idx = data.get('start_idx', 0)
-        chunk_size = 10  # Smaller chunks to stay within Render's 30s timeout
+        chunk_size = 100
         
         symbols = load_symbols()
         if not symbols:
@@ -877,8 +877,8 @@ def scan_chunk():
                 if error_count <= 3:
                     print(f"  ERROR on {sym}: {e}")
             
-            if (idx + 1) % 3 == 0:
-                time.sleep(0.2)
+            if (idx + 1) % 5 == 0:
+                time.sleep(0.1)
         
         # Log chunk summary
         print(f"\n  Chunk {start_idx+1}-{end_idx} Summary:")

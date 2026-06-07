@@ -125,8 +125,8 @@
                     document.getElementById('btnStart').textContent = '▶ RESTART SCAN';
                 } else if (autoRunning) {
                     // Auto-continue after 2 second delay
-                    status.textContent += ' | Next chunk in 2s...';
-                    setTimeout(scanNextChunk, 2000);
+                    status.textContent += ' | Next chunk in 1s...';
+                    setTimeout(scanNextChunk, 1000);
                 }
             } catch (error) {
                 status.textContent = 'Error: ' + error.message;
