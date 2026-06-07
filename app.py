@@ -97,14 +97,23 @@ init_db()
 
 
 def get_sector(symbol):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT sector FROM sector_cache WHERE symbol = ?", (symbol,))
-    row = c.fetchone()
-    if row and row[0]:
+    """Get sector for a symbol (with caching)."""
+    if DB_TYPE == 'postgresql':
+        with db_engine.connect() as conn:
+            result = conn.execute(text("SELECT sector FROM sector_cache WHERE symbol = :symbol"), {"symbol": symbol})
+            row = result.fetchone()
+            if row and row[0]:
+                return row[0]
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT sector FROM sector_cache WHERE symbol = ?", (symbol,))
+        row = c.fetchone()
+        if row and row[0]:
+            conn.close()
+            return row[0]
         conn.close()
-        return row[0]
-    conn.close()
+    
     sector = ""
     try:
         url = f"https://www.screener.in/company/{symbol}/"
@@ -117,13 +126,27 @@ def get_sector(symbol):
                 sector = html_mod.unescape(m.group(1).strip())
     except Exception:
         pass
+    
     if sector:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("INSERT OR REPLACE INTO sector_cache (symbol, sector, updated_at) VALUES (?,?,?)",
-                  (symbol, sector, datetime.now().strftime("%Y-%m-%d")))
-        conn.commit()
-        conn.close()
+        if DB_TYPE == 'postgresql':
+            with db_engine.connect() as conn:
+                conn.execute(text(
+                    "INSERT INTO sector_cache (symbol, sector, updated_at) VALUES (:symbol, :sector, :updated_at) "
+                    "ON CONFLICT (symbol) DO UPDATE SET sector = :sector, updated_at = :updated_at"
+                ), {
+                    "symbol": symbol,
+                    "sector": sector,
+                    "updated_at": datetime.now().strftime("%Y-%m-%d")
+                })
+                conn.commit()
+        else:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("INSERT OR REPLACE INTO sector_cache (symbol, sector, updated_at) VALUES (?,?,?)",
+                      (symbol, sector, datetime.now().strftime("%Y-%m-%d")))
+            conn.commit()
+            conn.close()
+    
     return sector
 
 
@@ -431,21 +454,52 @@ def run_scan(console=False):
         print("="*70 + "\n")
 
     # Save to DB
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("DELETE FROM scan_results WHERE scan_date = ?", (scan_date,))
-    for r in results:
-        c.execute("""INSERT INTO scan_results
-            (scan_date, symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope,
-             proximity_pct, day_change_pct, sector, touch_day)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (scan_date, r["symbol"], r["ltp"], r["ema9"], r["ema21"],
-             r["gap_pct"], r["ema9_slope"], r["ema21_slope"], r["proximity_pct"],
-             r["day_change_pct"], r["sector"], r["touch_day"]))
-    c.execute("INSERT INTO scan_log (scan_date, total_stocks, passed, duration_sec) VALUES (?,?,?,?)",
-              (scan_date, len(symbols), len(results), elapsed))
-    conn.commit()
-    conn.close()
+    if DB_TYPE == 'postgresql':
+        with db_engine.connect() as conn:
+            conn.execute(text("DELETE FROM scan_results WHERE scan_date = :scan_date"), {"scan_date": scan_date})
+            for r in results:
+                conn.execute(text("""INSERT INTO scan_results
+                    (scan_date, symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope,
+                     proximity_pct, day_change_pct, sector, touch_day)
+                    VALUES (:scan_date, :symbol, :ltp, :ema9, :ema21, :gap_pct, :ema9_slope, :ema21_slope,
+                            :proximity_pct, :day_change_pct, :sector, :touch_day)"""), {
+                    "scan_date": scan_date,
+                    "symbol": r["symbol"],
+                    "ltp": r["ltp"],
+                    "ema9": r["ema9"],
+                    "ema21": r["ema21"],
+                    "gap_pct": r["gap_pct"],
+                    "ema9_slope": r["ema9_slope"],
+                    "ema21_slope": r["ema21_slope"],
+                    "proximity_pct": r["proximity_pct"],
+                    "day_change_pct": r["day_change_pct"],
+                    "sector": r["sector"],
+                    "touch_day": r["touch_day"]
+                })
+            conn.execute(text("""INSERT INTO scan_log (scan_date, total_stocks, passed, duration_sec) 
+                                VALUES (:scan_date, :total_stocks, :passed, :duration_sec)"""), {
+                "scan_date": scan_date,
+                "total_stocks": len(symbols),
+                "passed": len(results),
+                "duration_sec": elapsed
+            })
+            conn.commit()
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM scan_results WHERE scan_date = ?", (scan_date,))
+        for r in results:
+            c.execute("""INSERT INTO scan_results
+                (scan_date, symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope,
+                 proximity_pct, day_change_pct, sector, touch_day)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (scan_date, r["symbol"], r["ltp"], r["ema9"], r["ema21"],
+                 r["gap_pct"], r["ema9_slope"], r["ema21_slope"], r["proximity_pct"],
+                 r["day_change_pct"], r["sector"], r["touch_day"]))
+        c.execute("INSERT INTO scan_log (scan_date, total_stocks, passed, duration_sec) VALUES (?,?,?,?)",
+                  (scan_date, len(symbols), len(results), elapsed))
+        conn.commit()
+        conn.close()
 
     scan_results_cache = results
     last_scan_time = datetime.now().strftime("%d-%b-%Y %I:%M %p")
@@ -540,14 +594,23 @@ def trigger_scan():
 
 @app.route("/results")
 def get_results():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""SELECT symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope,
+    if DB_TYPE == 'postgresql':
+        with db_engine.connect() as conn:
+            result = conn.execute(text("""SELECT symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope,
+                        proximity_pct, day_change_pct, scan_date,
+                        COALESCE(sector,''), COALESCE(touch_day,'')
+                 FROM scan_results ORDER BY scan_date DESC, gap_pct ASC LIMIT 500"""))
+            rows = result.fetchall()
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""SELECT symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope,
                         proximity_pct, day_change_pct, scan_date,
                         COALESCE(sector,''), COALESCE(touch_day,'')
                  FROM scan_results ORDER BY scan_date DESC, gap_pct ASC LIMIT 500""")
-    rows = c.fetchall()
-    conn.close()
+        rows = c.fetchall()
+        conn.close()
+    
     return jsonify([{
         "symbol": r[0], "ltp": r[1], "ema9": r[2], "ema21": r[3],
         "gap_pct": r[4], "ema9_slope": r[5], "ema21_slope": r[6],
@@ -558,16 +621,27 @@ def get_results():
 
 @app.route("/export")
 def export_excel():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""SELECT symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope,
+    if DB_TYPE == 'postgresql':
+        with db_engine.connect() as conn:
+            result = conn.execute(text("""SELECT symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope,
+                        proximity_pct, day_change_pct, scan_date,
+                        COALESCE(sector,''), COALESCE(touch_day,'')
+                 FROM scan_results
+                 WHERE scan_date = (SELECT MAX(scan_date) FROM scan_results)
+                 ORDER BY sector ASC, gap_pct ASC"""))
+            rows = result.fetchall()
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""SELECT symbol, ltp, ema9, ema21, gap_pct, ema9_slope, ema21_slope,
                         proximity_pct, day_change_pct, scan_date,
                         COALESCE(sector,''), COALESCE(touch_day,'')
                  FROM scan_results
                  WHERE scan_date = (SELECT MAX(scan_date) FROM scan_results)
                  ORDER BY sector ASC, gap_pct ASC""")
-    rows = c.fetchall()
-    conn.close()
+        rows = c.fetchall()
+        conn.close()
+    
     df = pd.DataFrame(rows, columns=["Symbol","LTP","EMA9","EMA21","Gap%",
                                       "EMA9 Slope%","EMA21 Slope%","Proximity%",
                                       "Day Chg%","Date","Sector","Touch Day"])
