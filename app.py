@@ -775,8 +775,19 @@ def scan_chunk():
                 if not touch_day:
                     continue
                 
-                # PASS 2: LTP checks
-                ltp = cur_close  # Use last close as LTP
+                # PASS 2: LTP checks - use OHLC API for live/last-trading-day prices
+                try:
+                    ohlc_data = kite.ohlc(sym)
+                    if isinstance(ohlc_data, dict) and "last_price" in ohlc_data:
+                        ltp = ohlc_data["last_price"]
+                        prev_close = ohlc_data["ohlc"]["close"]
+                    else:
+                        ltp = cur_close
+                        prev_close = aligned_closes[-2] if len(aligned_closes) > 1 else cur_close
+                except Exception:
+                    ltp = cur_close
+                    prev_close = aligned_closes[-2] if len(aligned_closes) > 1 else cur_close
+                
                 day_change = ((ltp - prev_close) / prev_close) * 100 if prev_close else 0
                 
                 if day_change < INTRADAY_GAIN_MIN or day_change > INTRADAY_GAIN_MAX:
