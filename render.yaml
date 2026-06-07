@@ -5,10 +5,10 @@ services:
     region: oregon
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --worker-class gevent --workers 2 --timeout 600 --keep-alive 5 --bind 0.0.0.0:$PORT
+    startCommand: gunicorn app:app --workers 2 --timeout 600 --keep-alive 5 --bind 0.0.0.0:$PORT
     envVars:
       - key: PYTHON_VERSION
-        value: 3.13.0
+        value: 3.12.8
       - key: UPSTOX_ANALYTICS_TOKEN
         sync: false
       - key: DATABASE_URL
