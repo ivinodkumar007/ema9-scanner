@@ -1,2 +1,3 @@
 # Web service (dashboard - always on)
-web: gunicorn app:app --workers 2 --timeout 600 --keep-alive 5
+# Increased timeout to 900 seconds (15 minutes) for long scans
+web: gunicorn app:app --workers 2 --timeout 900 --keep-alive 5 --graceful-timeout 30

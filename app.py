@@ -598,14 +598,22 @@ def send_gmail(results, scan_date):
 @app.route("/progress")
 def progress():
     def stream():
-        while True:
+        count = 0
+        while count < 1200:  # Max 10 minutes (1200 * 0.5s)
             data = json.dumps(scan_progress)
             yield f"data: {data}\n\n"
             if not scan_progress["running"] and scan_progress["phase"].startswith("Complete"):
                 yield f"data: {json.dumps({'done': True})}\n\n"
                 break
+            count += 1
             time.sleep(0.5)
     return Response(stream(), mimetype="text/event-stream")
+
+
+@app.route("/health")
+def health():
+    """Health check endpoint for Render."""
+    return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
 
 
 @app.route("/scan", methods=["POST"])
