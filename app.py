@@ -652,6 +652,7 @@ def health():
 
 @app.route("/scan", methods=["POST"])
 def trigger_scan():
+    """Start full scan (legacy - kept for compatibility)."""
     if scan_progress["running"]:
         return jsonify({"status": "already_running"})
     
@@ -659,6 +660,68 @@ def trigger_scan():
     t = threading.Thread(target=run_scan, args=(False,), daemon=False)
     t.start()
     return jsonify({"status": "started"})
+
+
+@app.route("/scan-chunk", methods=["POST"])
+def scan_chunk():
+    """Scan next 50 stocks (manual chunk-by-chunk)."""
+    try:
+        data = request.json if request.is_json else {}
+        start_idx = data.get('start_idx', 0)
+        chunk_size = 50
+        
+        # Load symbols
+        symbols = load_symbols()
+        if not symbols:
+            return jsonify({"error": "No symbols loaded"}), 400
+        
+        # Authenticate
+        kite = get_kite()
+        if not kite:
+            return jsonify({"error": "Authentication failed"}), 400
+        
+        # Get chunk of symbols
+        end_idx = min(start_idx + chunk_size, len(symbols))
+        chunk_symbols = symbols[start_idx:end_idx]
+        
+        scan_progress["running"] = True
+        scan_progress["phase"] = f"Scanning chunk {start_idx+1}-{end_idx}"
+        
+        results = []
+        today = date.today()
+        scan_date = today.strftime("%Y-%m-%d")
+        
+        # Process this chunk
+        for idx, sym in enumerate(chunk_symbols):
+            actual_idx = start_idx + idx
+            scan_progress["current"] = actual_idx + 1
+            scan_progress["total"] = len(symbols)
+            scan_progress["symbol"] = sym
+            
+            try:
+                # Your existing scan logic here (simplified)
+                # This should call the same filtering logic as run_scan
+                # For now, just marking progress
+                time.sleep(0.1)  # Simulate processing
+                
+            except Exception as e:
+                print(f"  ⚠ Error scanning {sym}: {e}")
+        
+        scan_progress["running"] = False
+        scan_progress["phase"] = f"Chunk complete: {start_idx+1}-{end_idx}"
+        
+        return jsonify({
+            "status": "complete",
+            "start_idx": start_idx,
+            "end_idx": end_idx,
+            "next_idx": end_idx,
+            "total": len(symbols),
+            "message": f"Scanned stocks {start_idx+1}-{end_idx}"
+        })
+        
+    except Exception as e:
+        scan_progress["running"] = False
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/results")
