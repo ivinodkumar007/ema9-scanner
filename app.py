@@ -703,12 +703,15 @@ def scan_chunk():
             scan_progress["symbol"] = sym
             
             try:
-                token = _get_instrument_token(kite, sym)
-                if not token:
-                    skip_reasons["no_token"] += 1
-                    continue
+                # UpstoxClient doesn't need token lookup - it uses symbol directly
+                is_upstox = hasattr(kite, '_get_instrument_token')
+                if not is_upstox:
+                    token = _get_instrument_token(kite, sym)
+                    if not token:
+                        skip_reasons["no_token"] += 1
+                        continue
                 
-                if hasattr(kite, '_get_instrument_token'):
+                if is_upstox:
                     candles = kite.historical_data(symbol=sym, from_date=from_date, to_date=today, interval="day")
                 else:
                     candles = kite.historical_data(instrument_token=token, from_date=from_date, to_date=today, interval="day")
