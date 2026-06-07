@@ -131,8 +131,16 @@ class UpstoxClient:
         print(f"  ⚠ Failed to load instruments from all URLs")
         return []
     
-    def _get_instrument_token(self, symbol):
-        """Get instrument key for a symbol (used in API calls)."""
+    def _get_instrument_token(self, symbol, isin=""):
+        """Get instrument key for a symbol (used in API calls).
+        
+        Args:
+            symbol: Trading symbol (e.g., "RELIANCE")
+            isin: ISIN number (e.g., "INE002A01018") - more reliable match
+        
+        Returns:
+            instrument_key like "NSE_EQ|INE002A01018" or None
+        """
         if self._instrument_cache is None:
             self.instruments("NSE")
         
@@ -141,13 +149,19 @@ class UpstoxClient:
             self._instrument_cache = {"exchange": "NSE", "data": []}
             return None
         
+        # Try ISIN match first (most reliable)
+        if isin:
+            for inst in self._instrument_cache["data"]:
+                if inst.get("isin", "").upper() == isin.upper():
+                    return inst.get("instrument_key") or inst.get("instrument_token")
+        
+        # Fallback to symbol match
         for inst in self._instrument_cache["data"]:
-            if inst.get("tradingsymbol") == symbol:
-                # Return instrument_key (e.g., "NSE_EQ|INE002A01018") for API calls
+            if inst.get("tradingsymbol", "").upper() == symbol.upper():
                 return inst.get("instrument_key") or inst.get("instrument_token")
         return None
     
-    def historical_data(self, symbol, from_date, to_date, interval="day"):
+    def historical_data(self, symbol, from_date, to_date, interval="day", isin=""):
         """Get historical candle data (V3 API).
         
         Args:
@@ -155,11 +169,12 @@ class UpstoxClient:
             from_date: Start date (datetime.date)
             to_date: End date (datetime.date)
             interval: "day", "minute", "3minute", "5minute", etc.
+            isin: ISIN number for exact instrument match
         
         Returns:
             List of candle dicts with: date, open, high, low, close, volume
         """
-        token = self._get_instrument_token(symbol)
+        token = self._get_instrument_token(symbol, isin=isin)
         if not token:
             # Log first few missing symbols for debugging
             if not hasattr(self, '_missing_count'):
@@ -167,10 +182,19 @@ class UpstoxClient:
             if self._missing_count < 5:
                 cache_size = len(self._instrument_cache["data"]) if self._instrument_cache else 0
                 print(f"  ⚠ No token for '{symbol}' (cache has {cache_size} instruments)")
-                # Show first few symbols in cache for comparison
+                # Try fuzzy match
                 if self._instrument_cache and self._instrument_cache["data"]:
-                    samples = [i.get("tradingsymbol") for i in self._instrument_cache["data"][:5]]
-                    print(f"    Cache samples: {samples}")
+                    matches = [i["tradingsymbol"] for i in self._instrument_cache["data"] 
+                              if symbol.upper() in i.get("tradingsymbol", "").upper()][:5]
+                    if matches:
+                        print(f"    Similar symbols: {matches}")
+                    else:
+                        print(f"    No similar matches found")
+                    # Also check name field
+                    name_matches = [i.get("tradingsymbol", "") for i in self._instrument_cache["data"]
+                                   if symbol.replace(" ", "") in i.get("name", "").replace(" ", "").upper()][:5]
+                    if name_matches:
+                        print(f"    Name matches: {name_matches}")
             self._missing_count += 1
             return []
         
@@ -208,13 +232,13 @@ class UpstoxClient:
         
         return []
     
-    def ohlc(self, symbol):
+    def ohlc(self, symbol, isin=""):
         """Get OHLC and LTP data for a symbol (V3 API).
         
         Returns:
             Dict with last_price and ohlc data
         """
-        token = self._get_instrument_token(symbol)
+        token = self._get_instrument_token(symbol, isin=isin)
         if not token:
             return None
         

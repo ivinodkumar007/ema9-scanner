@@ -164,11 +164,27 @@ def load_symbols():
         if NSE_STOCKS_FILE.endswith(".csv"):
             df = pd.read_csv(NSE_STOCKS_FILE)
             col = "SYMBOL" if "SYMBOL" in df.columns else df.columns[0]
+            # Also load ISIN if available
+            isin_col = None
+            for c in df.columns:
+                if 'ISIN' in c.upper():
+                    isin_col = c
+                    break
+            
+            symbols = []
+            for _, row in df.iterrows():
+                sym = str(row[col]).strip()
+                isin = str(row[isin_col]).strip() if isin_col and pd.notna(row.get(isin_col)) else ""
+                if sym and sym != "nan":
+                    symbols.append({"symbol": sym, "isin": isin})
+            
+            print(f"  Loaded {len(symbols)} symbols (with ISIN: {sum(1 for s in symbols if s['isin'])})")
+            return symbols
         else:
             df = pd.read_excel(NSE_STOCKS_FILE)
             col = df.columns[0]
-        syms = df[col].dropna().astype(str).str.strip().tolist()
-        return [s for s in syms if s and s != "nan"]
+            syms = df[col].dropna().astype(str).str.strip().tolist()
+            return [{"symbol": s, "isin": ""} for s in syms if s and s != "nan"]
     except Exception as e:
         print(f"  ERROR loading symbols: {e}")
         return []
@@ -236,7 +252,9 @@ def run_scan(console=False):
 
     pass1_results = []
 
-    for idx, sym in enumerate(symbols):
+    for idx, sym_info in enumerate(symbols):
+        sym = sym_info["symbol"] if isinstance(sym_info, dict) else sym_info
+        isin = sym_info.get("isin", "") if isinstance(sym_info, dict) else ""
         scan_progress["current"] = idx + 1
         scan_progress["symbol"] = sym
 
@@ -258,7 +276,8 @@ def run_scan(console=False):
                     symbol=sym,
                     from_date=from_date,
                     to_date=today,
-                    interval="day"
+                    interval="day",
+                    isin=isin
                 )
             else:
                 # Kite (legacy)
@@ -337,7 +356,7 @@ def run_scan(console=False):
                 continue
 
             pass1_results.append({
-                "symbol": sym, "ema9": cur_ema9, "ema21": cur_ema21,
+                "symbol": sym, "isin": isin, "ema9": cur_ema9, "ema21": cur_ema21,
                 "gap_pct": gap_pct, "ema9_slope": ema9_slope,
                 "ema21_slope": ema21_slope, "cur_close": cur_close,
                 "prev_close": prev_close, "touch_day": touch_day,
@@ -400,13 +419,14 @@ def run_scan(console=False):
         if any(r["symbol"] == p["symbol"] for r in results):
             continue
         sym = p["symbol"]
+        isin = p.get("isin", "")
         instrument = f"NSE:{sym}"
         scan_progress["current"] = idx + 1
         scan_progress["total"] = len(pass1_results)
         scan_progress["symbol"] = sym
 
         try:
-            ohlc_data = kite.ohlc(sym)
+            ohlc_data = kite.ohlc(sym, isin=isin)
             # Handle both Kite and Upstox response formats
             if isinstance(ohlc_data, dict) and "last_price" in ohlc_data:
                 # Upstox format
@@ -701,17 +721,19 @@ def scan_chunk():
                        "gap": 0, "ema9_slope": 0, "ema21_slope": 0, "no_touch": 0,
                        "day_change": 0, "ltp_cap": 0, "error": 0}
         
-        for idx, sym in enumerate(chunk_symbols):
+        for idx, sym_info in enumerate(chunk_symbols):
             actual_idx = start_idx + idx
+            sym = sym_info["symbol"] if isinstance(sym_info, dict) else sym_info
+            isin = sym_info.get("isin", "") if isinstance(sym_info, dict) else ""
             scan_progress["current"] = actual_idx + 1
             scan_progress["symbol"] = sym
             
             try:
-                # UpstoxClient doesn't need token lookup - it uses symbol directly
+                # UpstoxClient: use ISIN if available for exact instrument lookup
                 is_upstox = hasattr(kite, '_get_instrument_token')
                 
                 if is_upstox:
-                    candles = kite.historical_data(symbol=sym, from_date=from_date, to_date=today, interval="day")
+                    candles = kite.historical_data(symbol=sym, from_date=from_date, to_date=today, interval="day", isin=isin)
                 else:
                     token = _get_instrument_token(kite, sym)
                     if not token:
@@ -800,7 +822,7 @@ def scan_chunk():
                 ltp = 0
                 prev_close = 0
                 try:
-                    ohlc_data = kite.ohlc(sym)
+                    ohlc_data = kite.ohlc(sym, isin=isin)
                     if isinstance(ohlc_data, dict) and "last_price" in ohlc_data:
                         ltp = ohlc_data["last_price"]
                         prev_close = ohlc_data["ohlc"]["close"]
@@ -840,7 +862,7 @@ def scan_chunk():
                 sector = get_sector(sym)
                 
                 chunk_results.append({
-                    "symbol": sym, "ltp": round(ltp, 2),
+                    "symbol": sym, "isin": isin, "ltp": round(ltp, 2),
                     "ema9": round(cur_ema9, 2), "ema21": round(cur_ema21, 2),
                     "gap_pct": round(gap_pct, 2), "ema9_slope": round(ema9_slope, 2),
                     "ema21_slope": round(ema21_slope, 2),
