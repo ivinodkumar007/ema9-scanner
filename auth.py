@@ -122,6 +122,17 @@ class UpstoxClient:
         """
         token = self._get_instrument_token(symbol)
         if not token:
+            # Log first few missing symbols for debugging
+            if not hasattr(self, '_missing_count'):
+                self._missing_count = 0
+            if self._missing_count < 5:
+                cache_size = len(self._instrument_cache["data"]) if self._instrument_cache else 0
+                print(f"  ⚠ No token for '{symbol}' (cache has {cache_size} instruments)")
+                # Show first few symbols in cache for comparison
+                if self._instrument_cache and self._instrument_cache["data"]:
+                    samples = [i.get("tradingsymbol") for i in self._instrument_cache["data"][:5]]
+                    print(f"    Cache samples: {samples}")
+            self._missing_count += 1
             return []
         
         # Upstox V3 Historical Candle API
